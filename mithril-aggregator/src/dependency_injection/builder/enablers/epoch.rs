@@ -11,13 +11,15 @@ impl DependenciesBuilder {
         let chain_observer = self.get_chain_observer().await?;
         let era_checker = self.get_era_checker().await?;
         let stake_store = self.get_stake_store().await?;
+        //remove conf usage for epoch_settings and allowed_discriminants and send mithril_network_configuration instread
         let epoch_settings = self.configuration.get_epoch_settings_configuration();
         let allowed_discriminants = self
             .configuration
             .compute_allowed_signed_entity_types_discriminants()?;
 
+        let network_configuration_provider = self.get_mithril_network_configuration_provider();
         let epoch_service = Arc::new(RwLock::new(MithrilEpochService::new(
-            epoch_settings,
+            network_configuration_provider,
             EpochServiceDependencies::new(
                 epoch_settings_storer,
                 verification_key_store,

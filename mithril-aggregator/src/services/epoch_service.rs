@@ -1,5 +1,6 @@
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
+use mithril_protocol_config::interface::MithrilNetworkConfigurationProvider;
 use slog::{Logger, debug};
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -180,7 +181,8 @@ impl EpochServiceDependencies {
 /// Implementation of the [epoch service][EpochService].
 pub struct MithrilEpochService {
     /// Epoch settings that will be inserted when inform_epoch is called
-    future_epoch_settings: AggregatorEpochSettings,
+    //future_epoch_settings: AggregatorEpochSettings,
+    mithril_network_configuration_provider: Arc<dyn MithrilNetworkConfigurationProvider>,
     epoch_data: Option<EpochData>,
     computed_epoch_data: Option<ComputedEpochData>,
     epoch_settings_storer: Arc<dyn EpochSettingsStorer>,
@@ -195,13 +197,15 @@ pub struct MithrilEpochService {
 impl MithrilEpochService {
     /// Create a new service instance
     pub fn new(
-        future_epoch_settings: AggregatorEpochSettings,
+        //future_epoch_settings: AggregatorEpochSettings,
+        mithril_network_configuration_provider: Arc<dyn MithrilNetworkConfigurationProvider>,
         dependencies: EpochServiceDependencies,
         allowed_discriminants: BTreeSet<SignedEntityTypeDiscriminants>,
         logger: Logger,
     ) -> Self {
         Self {
-            future_epoch_settings,
+            //future_epoch_settings,
+            mithril_network_configuration_provider,
             epoch_data: None,
             computed_epoch_data: None,
             epoch_settings_storer: dependencies.epoch_settings_storer,
@@ -266,15 +270,31 @@ impl MithrilEpochService {
     async fn insert_future_epoch_settings(&self, actual_epoch: Epoch) -> StdResult<()> {
         let recording_epoch = actual_epoch.offset_to_epoch_settings_recording_epoch();
 
-        debug!(
+        /* debug!(
             self.logger, "Inserting epoch settings in epoch {recording_epoch}";
             "epoch_settings" => ?self.future_epoch_settings
-        );
+        ); */
 
+        let network_configuration = self
+            .mithril_network_configuration_provider
+            .get_network_configuration()
+            .await?;
+
+        let aggregator_epoch_settings = AggregatorEpochSettings {
+            protocol_parameters: network_configuration
+                .signer_registration_protocol_parameters
+                .clone(),
+            cardano_transactions_signing_config: network_configuration
+                .signed_entity_types_config
+                .cardano_transactions
+                .clone()
+                .unwrap(),
+        };
         self.epoch_settings_storer
             .save_epoch_settings(
                 recording_epoch,
-                self.future_epoch_settings.clone(),
+                /* self.future_epoch_settings.clone(), */
+                aggregator_epoch_settings
             )
             .await
             .with_context(|| format!("Epoch service failed to insert future_epoch_settings to epoch {recording_epoch}"))
