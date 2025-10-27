@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 As a minor extension, we have adopted a slightly different versioning convention for the Mithril distributions (<https://mithril.network/doc/adr/3#decision>)
 
-## Mithril Distribution [2543] - UNRELEASED
+## Mithril Distribution [2543] - 2025-10-28
 
 - Client library, CLI and WASM:
   - **DEPRECATED**: The `with_aggregator_client` and `new` functions have been deprecated in the `ClientBuilder` struct of the library.
@@ -39,9 +39,15 @@ As a minor extension, we have adopted a slightly different versioning convention
 
 - Crates versions:
 
-| Crate | Version |
-| ----- | ------- |
-| N/A   | `-`     |
+| Crate               | Version   |
+| ------------------- | --------- |
+| mithril-aggregator  | `0.7.90`  |
+| mithril-client      | `0.12.34` |
+| mithril-client-cli  | `0.12.33` |
+| mithril-client-wasm | `0.9.7`   |
+| mithril-common      | `0.6.25`  |
+| mithril-signer      | `0.2.273` |
+| mithril-stm         | `0.5.5`   |
 
 ## Mithril Distribution [2537] - 2025-09-17
 
