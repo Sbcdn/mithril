@@ -13,6 +13,12 @@ include = ["**/*.rs", "Cargo.toml", "README.md"]
 [lib]
 crate-type = ["lib", "cdylib", "staticlib"]
 
+[features]
+default = []
+
+# Support compressed traffic with `reqwest`
+enable-http-compression = ["reqwest/gzip", "reqwest/zstd", "reqwest/deflate", "reqwest/brotli"]
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }

@@ -205,6 +205,9 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "enable-http-compression")]
+    crate::test_http_compression_is_enabled!();
+
     #[tokio::test]
     async fn test_minimal_get_query() {
         let (server, client) = setup_server_and_client();
