@@ -17,14 +17,27 @@ pub struct AggregateVerificationKey<D: Clone + Digest + FixedOutput> {
 }
 
 impl<D: Digest + Clone + FixedOutput> AggregateVerificationKey<D> {
+    /// Constructor for creating AggregateVerificationKey from components
+    /// introduced with the risc0 custom serialization features
+    pub fn new(mt_commitment: MerkleTreeBatchCommitment<D>, total_stake: Stake) -> Self {
+        Self {
+            mt_commitment,
+            total_stake,
+        }
+    }
+
     pub(crate) fn get_merkle_tree_batch_commitment(&self) -> MerkleTreeBatchCommitment<D> {
         self.mt_commitment.clone()
     }
 
+    /// this is depricated but risc0 custom serialization features require public access
+    /// for that reas the deprication is taken out
+    /*
     #[deprecated(
         since = "0.5.0",
         note = "Use `get_merkle_tree_batch_commitment` instead"
     )]
+    */
     pub fn get_mt_commitment(&self) -> MerkleTreeBatchCommitment<D> {
         Self::get_merkle_tree_batch_commitment(self)
     }

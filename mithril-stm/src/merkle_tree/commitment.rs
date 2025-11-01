@@ -108,12 +108,18 @@ pub struct MerkleTreeBatchCommitment<D: Digest> {
 }
 
 impl<D: Digest> MerkleTreeBatchCommitment<D> {
-    pub(crate) fn new(root: Vec<u8>, nr_leaves: usize) -> Self {
+    // Made function public for reconstruction of AVK in custom serializer for risc0
+    pub fn new(root: Vec<u8>, nr_leaves: usize) -> Self {
         Self {
             root,
             nr_leaves,
             hasher: Default::default(),
         }
+    }
+
+    /// Get the number of leaves (needed for risc0 custom serialization, to not create breaking changes we introduce another getter)
+    pub fn nr_leaves(&self) -> usize {
+        self.nr_leaves
     }
 
     #[cfg(test)]

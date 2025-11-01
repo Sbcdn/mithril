@@ -25,6 +25,18 @@ pub struct AggregateSignature<D: Clone + Digest + FixedOutput> {
 }
 
 impl<D: Clone + Digest + FixedOutput + Send + Sync> AggregateSignature<D> {
+    /// Create a new AggregateSignature from components
+    /// This is useful for deserialization and testing purposes
+    pub fn new(
+        signatures: Vec<SingleSignatureWithRegisteredParty>,
+        batch_proof: MerkleBatchPath<D>,
+    ) -> Self {
+        Self {
+            signatures,
+            batch_proof,
+        }
+    }
+
     /// Verify all checks from signatures, except for the signature verification itself.
     ///
     /// Indices and quorum are checked by `BasicVerifier::preliminary_verify` with `msgp`.
@@ -127,6 +139,12 @@ impl<D: Clone + Digest + FixedOutput + Send + Sync> AggregateSignature<D> {
 
         BlsSignature::batch_verify_aggregates(&concat_msgs, &aggr_vks, &aggr_sigs)?;
         Ok(())
+    }
+
+    /// Public Getter to retrieve signatures for third party implementations
+    /// This is used for the risc0 mithril custom parser
+    pub fn signatures(&self) -> &[SingleSignatureWithRegisteredParty] {
+        &self.signatures
     }
 
     /// Convert multi signature to bytes

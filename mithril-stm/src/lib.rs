@@ -122,6 +122,8 @@ pub use error::{
     StmSignatureError,
 };
 pub use key_registration::{ClosedKeyRegistration, KeyRegistration};
+// export merkle_tree public types for custom serializer / deserializer for risc0
+pub use merkle_tree::{MerkleBatchPath, MerkleTreeBatchCommitment, MerkleTreeLeaf};
 pub use parameters::Parameters;
 pub use participant::{Initializer, Signer, VerificationKey, VerificationKeyProofOfPossession};
 pub use single_signature::{SingleSignature, SingleSignatureWithRegisteredParty};
