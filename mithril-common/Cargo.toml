@@ -43,7 +43,8 @@ chrono = { workspace = true }
 ciborium = "0.2.2"
 ckb-merkle-mountain-range = "0.6.1"
 digest = { workspace = true }
-ed25519-dalek = { version = "2.2.0", features = ["rand_core", "serde"] }
+# ed25519-dalek for compatibility with risc0 downgraded from 2.2.0 to 2.1.1
+ed25519-dalek = { version = "2.1.1", features = ["rand_core", "serde"] }
 fixed = "1.29.0"
 hex = { workspace = true }
 kes-summed-ed25519 = { version = "0.2.1", features = [
