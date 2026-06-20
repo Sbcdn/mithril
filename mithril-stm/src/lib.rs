@@ -147,7 +147,9 @@ mod proof_system;
 mod protocol;
 mod signature_scheme;
 
-pub use proof_system::AggregateVerificationKeyForConcatenation;
+pub use proof_system::{
+    AggregateVerificationKeyForConcatenation, ConcatenationProof, SingleSignatureForConcatenation,
+};
 pub use protocol::{
     AggregateSignature, AggregateSignatureError, AggregateSignatureType, AggregateVerificationKey,
     AggregationError, AncillaryGenesisData, AncillaryProofInput, AncillaryProofOutput,
@@ -158,6 +160,11 @@ pub use protocol::{
     VerificationKeyProofOfPossessionForConcatenation,
 };
 pub use signature_scheme::BlsSignatureError;
+
+// Re-export Merkle types for custom serializer / deserializer consumers (e.g. risc0).
+pub use membership_commitment::{
+    MerkleBatchPath, MerkleTreeBatchCommitment, MerkleTreeConcatenationLeaf, MerkleTreeLeaf,
+};
 
 use blake2::{Blake2b, digest::consts::U32};
 use digest::{Digest, FixedOutput};
@@ -178,7 +185,7 @@ pub use signature_scheme::{
 #[cfg(all(feature = "future_snark", not(feature = "benchmark-internals")))]
 use hash::poseidon::MidnightPoseidonDigest;
 
-#[cfg(feature = "benchmark-internals")]
+#[cfg(all(feature = "benchmark-internals", feature = "future_snark"))]
 pub use hash::poseidon::MidnightPoseidonDigest;
 
 #[cfg(feature = "future_snark")]

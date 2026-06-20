@@ -20,11 +20,31 @@ pub struct AggregateVerificationKeyForConcatenation<D: MembershipDigest> {
 }
 
 impl<D: MembershipDigest> AggregateVerificationKeyForConcatenation<D> {
+    /// Construct from already-built components. Exposed for custom
+    /// serializer / deserializer consumers (e.g. risc0).
+    pub fn new(
+        mt_commitment: MerkleTreeBatchCommitment<D::ConcatenationHash, MerkleTreeConcatenationLeaf>,
+        total_stake: Stake,
+    ) -> Self {
+        Self {
+            mt_commitment,
+            total_stake,
+        }
+    }
+
     /// Get the Merkle tree batch commitment.
     pub(crate) fn get_merkle_tree_batch_commitment(
         &self,
     ) -> MerkleTreeBatchCommitment<D::ConcatenationHash, MerkleTreeConcatenationLeaf> {
         self.mt_commitment.clone()
+    }
+
+    /// Borrow the Merkle tree batch commitment. Exposed for custom
+    /// serializer consumers that need byte-level access to root + nr_leaves.
+    pub fn get_mt_commitment(
+        &self,
+    ) -> &MerkleTreeBatchCommitment<D::ConcatenationHash, MerkleTreeConcatenationLeaf> {
+        &self.mt_commitment
     }
 
     /// Get the total stake.
@@ -48,11 +68,16 @@ impl<D: MembershipDigest> AggregateVerificationKeyForConcatenation<D> {
         let mut u64_bytes = [0u8; 8];
         let size = bytes.len();
 
+        // Guard against short inputs: a legacy AVK ends with an 8-byte
+        // stake suffix. Without this check, `&bytes[size - 8..]` panics
+        // with an out-of-range slice index on inputs shorter than 8
+        // bytes instead of returning a proper serialization error.
+        let mt_commitment_slice = bytes
+            .get(..size.checked_sub(8).ok_or(MerkleTreeError::SerializationError)?)
+            .ok_or(MerkleTreeError::SerializationError)?;
         u64_bytes.copy_from_slice(&bytes[size - 8..]);
         let stake = u64::from_be_bytes(u64_bytes);
-        let mt_commitment = MerkleTreeBatchCommitment::from_bytes(
-            bytes.get(..size - 8).ok_or(MerkleTreeError::SerializationError)?,
-        )?;
+        let mt_commitment = MerkleTreeBatchCommitment::from_bytes(mt_commitment_slice)?;
         Ok(Self {
             mt_commitment,
             total_stake: stake,
