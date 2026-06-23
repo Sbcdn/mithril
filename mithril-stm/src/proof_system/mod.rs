@@ -48,8 +48,9 @@ pub(crate) mod ivc_halo2_snark;
 
 pub use concatenation::{
     AggregateVerificationKeyForConcatenation, ConcatenationClerk, ConcatenationProof,
+    SingleSignatureForConcatenation,
 };
-pub(crate) use concatenation::{ConcatenationProofSigner, SingleSignatureForConcatenation};
+pub(crate) use concatenation::ConcatenationProofSigner;
 
 #[cfg(feature = "future_snark")]
 pub use halo2_snark::AggregateVerificationKeyForSnark;

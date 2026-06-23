@@ -103,6 +103,18 @@ impl<D: Digest + FixedOutput> MerkleBatchPath<D> {
         codec::to_cbor_bytes(self)
     }
 
+    /// Borrow the path's value list. Exposed for custom serializer / deserializer
+    /// consumers (e.g. risc0) that need the legacy raw byte layout.
+    pub fn values(&self) -> &[Vec<u8>] {
+        &self.values
+    }
+
+    /// Borrow the path's index list. Exposed for custom serializer / deserializer
+    /// consumers (e.g. risc0) that need the legacy raw byte layout.
+    pub fn indices(&self) -> &[usize] {
+        &self.indices
+    }
+
     /// Try to convert a byte string into a `BatchPath`.
     pub fn from_bytes(bytes: &[u8]) -> StmResult<Self> {
         codec::from_versioned_bytes(bytes, Self::from_bytes_legacy)
