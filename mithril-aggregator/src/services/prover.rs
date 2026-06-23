@@ -5,12 +5,11 @@ use std::time::Duration;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use rayon::prelude::*;
-use slog::{Logger, debug, info};
+use slog::{Logger, info};
 
 use mithril_common::{
     StdResult,
-    crypto_helper::{MKMap, MKMapNode, MKTree, MKTreeStorer},
+    crypto_helper::{MKTree, MKTreeStorer},
     entities::{
         BlockHash, BlockNumber, BlockRange, CardanoBlock, CardanoBlockTransactionMkTreeNode,
         CardanoTransaction, IntoMKTreeNode, MkSetProof, TransactionHash,
@@ -18,7 +17,9 @@ use mithril_common::{
     logging::LoggerExtensions,
     signable_builder::BlockRangeRootRetriever,
 };
-use mithril_resource_pool::{ResourcePool, ResourcePoolItem};
+use mithril_resource_pool::ResourcePoolItem;
+
+use super::prover_cache::{CachedMerkleMap, CachedMerkleMapPool, KeyedMerkleMapCache};
 
 /// Prover service is the cryptographic engine in charge of producing cryptographic proofs for transactions and blocks
 #[cfg_attr(test, mockall::automock)]
@@ -71,24 +72,41 @@ pub trait BlocksTransactionsRetriever: Sync + Send {
 pub struct MithrilProverService<S: MKTreeStorer> {
     blocks_transactions_retriever: Arc<dyn BlocksTransactionsRetriever>,
     block_range_root_retriever: Arc<dyn BlockRangeRootRetriever<S>>,
-    mk_map_pool: ResourcePool<MKMap<BlockRange, MKMapNode<BlockRange, S>, S>>,
+    cache: KeyedMerkleMapCache<S>,
     logger: Logger,
 }
 
 impl<S: MKTreeStorer> MithrilProverService<S> {
-    /// Create a new Mithril prover
+    /// Create a new Mithril prover.
+    ///
+    /// `mk_map_pool_size` is the number of identical maps kept per certified tip;
+    /// `cache_max_entries` is the number of tips cached before least-recently-used
+    /// eviction.
     pub fn new(
         blocks_transactions_retriever: Arc<dyn BlocksTransactionsRetriever>,
         block_range_root_retriever: Arc<dyn BlockRangeRootRetriever<S>>,
         mk_map_pool_size: usize,
+        cache_max_entries: usize,
         logger: Logger,
     ) -> Self {
         Self {
             blocks_transactions_retriever,
             block_range_root_retriever,
-            mk_map_pool: ResourcePool::new(mk_map_pool_size, vec![]),
+            cache: KeyedMerkleMapCache::new(cache_max_entries, mk_map_pool_size),
             logger: logger.new_with_component_name::<Self>(),
         }
+    }
+
+    /// Return the cached Merkle map pool for `up_to`, building it from the
+    /// block-range-roots at or below `up_to` on a cache miss.
+    async fn cached_pool_for(&self, up_to: BlockNumber) -> StdResult<Arc<CachedMerkleMapPool<S>>> {
+        self.cache
+            .get_or_try_init(up_to, || async {
+                self.block_range_root_retriever
+                    .compute_merkle_map_from_block_range_roots(up_to)
+                    .await
+            })
+            .await
     }
 
     async fn get_all_nodes_in_ranges_and_group_them_by_block_ranges(
@@ -111,10 +129,11 @@ impl<S: MKTreeStorer> MithrilProverService<S> {
         Ok(block_ranges_map)
     }
 
-    async fn get_mk_map(
+    fn get_mk_map<'a>(
         &self,
+        pool: &'a CachedMerkleMapPool<S>,
         nodes_to_insert: HashMap<BlockRange, BTreeSet<CardanoBlockTransactionMkTreeNode>>,
-    ) -> StdResult<ResourcePoolItem<'_, MKMap<BlockRange, MKMapNode<BlockRange, S>, S>>> {
+    ) -> StdResult<ResourcePoolItem<'a, CachedMerkleMap<S>>> {
         // 1 - Compute block ranges sub Merkle trees
         let mk_trees: StdResult<Vec<(BlockRange, MKTree<S>)>> = nodes_to_insert
             .into_iter()
@@ -125,9 +144,9 @@ impl<S: MKTreeStorer> MithrilProverService<S> {
             .collect();
         let mk_trees = BTreeMap::from_iter(mk_trees?);
 
-        // 2 - Acquire global Merkle map kept in cache
+        // 2 - Acquire the cached Merkle map for this up_to
         let acquire_timeout = Duration::from_millis(1000);
-        let mut mk_map = self.mk_map_pool.acquire_resource(acquire_timeout)?;
+        let mut mk_map = pool.acquire_resource(acquire_timeout)?;
 
         // 3 - Enrich the Merkle map with the block ranges Merkle trees
         for (block_range, mk_tree) in mk_trees {
@@ -164,14 +183,15 @@ impl<S: MKTreeStorer> MithrilProverService<S> {
             .get_all_nodes_in_ranges_and_group_them_by_block_ranges(ranges_to_retrieve)
             .await?;
 
-        // 3 - Fetch a cached Merkle map for the block ranges and replace its block ranges leaves with the fetched nodes
-        let mk_map = self.get_mk_map(nodes_per_block_ranges).await?;
+        // 3 - Fetch the cached Merkle map for this up_to and replace its block ranges leaves with the fetched nodes
+        let pool = self.cached_pool_for(up_to).await?;
+        let mk_map = self.get_mk_map(&pool, nodes_per_block_ranges)?;
 
         // 4 - Compute the proof for all transactions
         let mk_proof = mk_map.compute_proof(&nodes_to_prove).with_context(|| {
             format!("Failed to compute a merkle proof for the items: {nodes_to_prove:?}")
         })?;
-        self.mk_map_pool.give_back_resource_pool_item(mk_map)?;
+        pool.give_back_resource_pool_item(mk_map)?;
 
         Ok(Some(MkSetProof::<T>::new(items_to_prove, mk_proof)))
     }
@@ -206,41 +226,11 @@ impl<S: MKTreeStorer> ProverService for MithrilProverService<S> {
     }
 
     async fn compute_cache(&self, up_to: BlockNumber) -> StdResult<()> {
-        let pool_size = self.mk_map_pool.size();
         info!(
-            self.logger, "Starts computing the Merkle map pool resource of size {pool_size}";
+            self.logger, "Computing the Merkle map cache entry";
             "up_to_block_number" => *up_to,
         );
-        let mk_map_cache = self
-            .block_range_root_retriever
-            .compute_merkle_map_from_block_range_roots(up_to)
-            .await?;
-        let mk_maps_new = (1..=pool_size)
-            .into_par_iter()
-            .map(|i| {
-                debug!(
-                    self.logger,
-                    "Computing the Merkle map pool resource {i}/{pool_size}"
-                );
-                mk_map_cache.clone()
-            })
-            .collect::<Vec<MKMap<_, _, _>>>();
-        debug!(self.logger, "Draining the Merkle map pool");
-        let discriminant_new = self.mk_map_pool.discriminant()? + 1;
-        self.mk_map_pool.set_discriminant(discriminant_new)?;
-        self.mk_map_pool.clear();
-        debug!(
-            self.logger,
-            "Giving back new resources to the Merkle map pool"
-        );
-        mk_maps_new
-            .into_iter()
-            .map(|mk_map| self.mk_map_pool.give_back_resource(mk_map, discriminant_new))
-            .collect::<StdResult<Vec<_>>>()?;
-        info!(
-            self.logger,
-            "Completed computing the Merkle map pool resource of size {pool_size}"
-        );
+        self.cached_pool_for(up_to).await?;
 
         Ok(())
     }
@@ -276,7 +266,7 @@ mod tests {
     use mithril_cardano_node_chain::chain_importer::ChainDataStore;
     use mithril_cardano_node_chain::test::double::InMemoryChainDataStore;
     use mithril_common::{
-        crypto_helper::MKTreeStoreInMemory,
+        crypto_helper::{MKMap, MKTreeStoreInMemory},
         entities::{CardanoBlockWithTransactions, SlotNumber},
         test::{
             builder::CardanoTransactionsBuilder, crypto_helper::MKMapTestExtension,
@@ -333,11 +323,13 @@ mod tests {
                 .build(),
         );
         let mk_map_pool_size = 1;
+        let cache_max_entries = 4;
 
         MithrilProverService::<S>::new(
             repository.clone(),
             repository.clone(),
             mk_map_pool_size,
+            cache_max_entries,
             TestLogger::stdout(),
         )
     }
@@ -529,10 +521,12 @@ mod tests {
                     .build(),
             );
             let mk_map_pool_size = 1;
+            let cache_max_entries = 4;
             let prover = MithrilProverService::<MKTreeStoreInMemory>::new(
                 repository.clone(),
                 repository.clone(),
                 mk_map_pool_size,
+                cache_max_entries,
                 TestLogger::stdout(),
             );
             prover.compute_cache(beacon_to_prove).await.unwrap();

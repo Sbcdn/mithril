@@ -85,6 +85,20 @@ pub trait SignedEntityService: Send + Sync {
         &self,
     ) -> StdResult<Option<SignedEntity<CardanoBlocksTransactionsSnapshot>>>;
 
+    /// Return the signed Cardano Transaction Snapshot certified at or below the given block
+    /// number (the most recent one not exceeding it), if any.
+    async fn get_cardano_transaction_snapshot_at_or_below_block_number(
+        &self,
+        block_number: BlockNumber,
+    ) -> StdResult<Option<SignedEntity<CardanoTransactionsSnapshot>>>;
+
+    /// Return the signed Cardano Blocks and Transactions (v2) Snapshot certified at or
+    /// below the given block number (the most recent one not exceeding it), if any.
+    async fn get_cardano_blocks_transactions_snapshot_at_or_below_block_number(
+        &self,
+        block_number: BlockNumber,
+    ) -> StdResult<Option<SignedEntity<CardanoBlocksTransactionsSnapshot>>>;
+
     /// Return a list of signed Cardano stake distribution ordered by creation
     /// date descending.
     async fn get_last_signed_cardano_stake_distributions(
@@ -515,6 +529,36 @@ impl SignedEntityService for MithrilSignedEntityService {
             .pop()
             .map(|r| r.try_into())
             .transpose()
+    }
+
+    async fn get_cardano_transaction_snapshot_at_or_below_block_number(
+        &self,
+        block_number: BlockNumber,
+    ) -> StdResult<Option<SignedEntity<CardanoTransactionsSnapshot>>> {
+        let record = self
+            .signed_entity_storer
+            .get_cardano_transaction_signed_entity_at_or_below_block_number(block_number)
+            .await?;
+
+        match record {
+            Some(record) => Ok(Some(record.try_into()?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn get_cardano_blocks_transactions_snapshot_at_or_below_block_number(
+        &self,
+        block_number: BlockNumber,
+    ) -> StdResult<Option<SignedEntity<CardanoBlocksTransactionsSnapshot>>> {
+        let record = self
+            .signed_entity_storer
+            .get_cardano_blocks_transactions_signed_entity_at_or_below_block_number(block_number)
+            .await?;
+
+        match record {
+            Some(record) => Ok(Some(record.try_into()?)),
+            None => Ok(None),
+        }
     }
 
     async fn get_last_signed_cardano_stake_distributions(

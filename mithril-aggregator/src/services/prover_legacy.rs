@@ -1,6 +1,5 @@
 use async_trait::async_trait;
-use rayon::prelude::*;
-use slog::{Logger, debug, info};
+use slog::{Logger, info};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
@@ -9,14 +8,15 @@ use std::{
 
 use mithril_common::{
     StdResult,
-    crypto_helper::{MKMap, MKMapNode, MKTree, MKTreeStorer},
+    crypto_helper::{MKTree, MKTreeStorer},
     entities::{
         BlockNumber, BlockRange, CardanoTransaction, CardanoTransactionsSetProof, TransactionHash,
     },
     logging::LoggerExtensions,
     signable_builder::LegacyBlockRangeRootRetriever,
 };
-use mithril_resource_pool::ResourcePool;
+
+use super::prover_cache::KeyedMerkleMapCache;
 
 /// Legacy Prover service is the cryptographic engine in charge of producing cryptographic proofs for transactions
 #[cfg_attr(test, mockall::automock)]
@@ -55,24 +55,44 @@ pub trait TransactionsRetriever: Sync + Send {
 pub struct LegacyMithrilProverService<S: MKTreeStorer> {
     transaction_retriever: Arc<dyn TransactionsRetriever>,
     block_range_root_retriever: Arc<dyn LegacyBlockRangeRootRetriever<S>>,
-    mk_map_pool: ResourcePool<MKMap<BlockRange, MKMapNode<BlockRange, S>, S>>,
+    cache: KeyedMerkleMapCache<S>,
     logger: Logger,
 }
 
 impl<S: MKTreeStorer> LegacyMithrilProverService<S> {
-    /// Create a new Mithril prover
+    /// Create a new Mithril prover.
+    ///
+    /// `mk_map_pool_size` is the number of identical maps kept per certified tip;
+    /// `cache_max_entries` is the number of tips cached before least-recently-used
+    /// eviction.
     pub fn new(
         transaction_retriever: Arc<dyn TransactionsRetriever>,
         block_range_root_retriever: Arc<dyn LegacyBlockRangeRootRetriever<S>>,
         mk_map_pool_size: usize,
+        cache_max_entries: usize,
         logger: Logger,
     ) -> Self {
         Self {
             transaction_retriever,
             block_range_root_retriever,
-            mk_map_pool: ResourcePool::new(mk_map_pool_size, vec![]),
+            cache: KeyedMerkleMapCache::new(cache_max_entries, mk_map_pool_size),
             logger: logger.new_with_component_name::<Self>(),
         }
+    }
+
+    /// Return the cached Merkle map pool for `up_to`, building it from the
+    /// block-range-roots at or below `up_to` on a cache miss.
+    async fn cached_pool_for(
+        &self,
+        up_to: BlockNumber,
+    ) -> StdResult<Arc<super::prover_cache::CachedMerkleMapPool<S>>> {
+        self.cache
+            .get_or_try_init(up_to, || async {
+                self.block_range_root_retriever
+                    .compute_merkle_map_from_block_range_roots(up_to)
+                    .await
+            })
+            .await
     }
 
     async fn get_block_ranges(
@@ -136,9 +156,10 @@ impl<S: MKTreeStorer> LegacyProverService for LegacyMithrilProverService<S> {
             .collect();
         let mk_trees = BTreeMap::from_iter(mk_trees?);
 
-        // 3 - Compute block range roots Merkle map
+        // 3 - Acquire the cached block range roots Merkle map for this up_to
+        let pool = self.cached_pool_for(up_to).await?;
         let acquire_timeout = Duration::from_millis(1000);
-        let mut mk_map = self.mk_map_pool.acquire_resource(acquire_timeout)?;
+        let mut mk_map = pool.acquire_resource(acquire_timeout)?;
 
         // 4 - Enrich the Merkle map with the block ranges Merkle trees
         for (block_range, mk_tree) in mk_trees {
@@ -148,7 +169,7 @@ impl<S: MKTreeStorer> LegacyProverService for LegacyMithrilProverService<S> {
         // 5 - Compute the proof for all transactions
         match mk_map.compute_proof(transaction_hashes) {
             Ok(mk_proof) => {
-                self.mk_map_pool.give_back_resource_pool_item(mk_map)?;
+                pool.give_back_resource_pool_item(mk_map)?;
                 let mk_proof_leaves = mk_proof.leaves();
                 let transaction_hashes_certified: Vec<TransactionHash> = transaction_hashes
                     .iter()
@@ -166,41 +187,11 @@ impl<S: MKTreeStorer> LegacyProverService for LegacyMithrilProverService<S> {
     }
 
     async fn compute_cache(&self, up_to: BlockNumber) -> StdResult<()> {
-        let pool_size = self.mk_map_pool.size();
         info!(
-            self.logger, "Starts computing the Merkle map pool resource of size {pool_size}";
+            self.logger, "Computing the Merkle map cache entry";
             "up_to_block_number" => *up_to,
         );
-        let mk_map_cache = self
-            .block_range_root_retriever
-            .compute_merkle_map_from_block_range_roots(up_to)
-            .await?;
-        let mk_maps_new = (1..=pool_size)
-            .into_par_iter()
-            .map(|i| {
-                debug!(
-                    self.logger,
-                    "Computing the Merkle map pool resource {i}/{pool_size}"
-                );
-                mk_map_cache.clone()
-            })
-            .collect::<Vec<MKMap<_, _, _>>>();
-        debug!(self.logger, "Draining the Merkle map pool");
-        let discriminant_new = self.mk_map_pool.discriminant()? + 1;
-        self.mk_map_pool.set_discriminant(discriminant_new)?;
-        self.mk_map_pool.clear();
-        debug!(
-            self.logger,
-            "Giving back new resources to the Merkle map pool"
-        );
-        mk_maps_new
-            .into_iter()
-            .map(|mk_map| self.mk_map_pool.give_back_resource(mk_map, discriminant_new))
-            .collect::<StdResult<Vec<_>>>()?;
-        info!(
-            self.logger,
-            "Completed computing the Merkle map pool resource of size {pool_size}"
-        );
+        self.cached_pool_for(up_to).await?;
 
         Ok(())
     }
@@ -358,11 +349,13 @@ mod tests {
         let mut block_range_root_retriever = MockLegacyBlockRangeRootRetrieverImpl::new();
         block_range_root_retriever_mock_config(&mut block_range_root_retriever);
         let mk_map_pool_size = 1;
+        let cache_max_entries = 4;
 
         LegacyMithrilProverService::new(
             Arc::new(transaction_retriever),
             Arc::new(block_range_root_retriever),
             mk_map_pool_size,
+            cache_max_entries,
             TestLogger::stdout(),
         )
     }
@@ -630,5 +623,89 @@ mod tests {
             .compute_transactions_proofs(test_data.beacon, &test_data.transaction_hashes_to_prove)
             .await
             .expect_err("Should have failed because of block range root retriever failure");
+    }
+
+    #[tokio::test]
+    async fn proves_each_up_to_against_its_own_block_range_roots_map() {
+        let transactions = CardanoTransactionsBuilder::new()
+            .max_transactions_per_block(1)
+            .blocks_per_block_range(3)
+            .build_transactions_for_block_ranges(5);
+        let transaction_to_prove = test_data::filter_transactions_for_indices(&[1], &transactions);
+        let transaction_hashes = test_data::map_to_transaction_hashes(&transaction_to_prove);
+
+        // The lower tip is certified over the first two block ranges only, the higher tip
+        // over all of them; both cover the proven transaction's range.
+        let all_block_ranges = test_data::transactions_group_by_block_range(&transactions);
+        let lower_block_ranges: BTreeMap<_, _> = all_block_ranges
+            .iter()
+            .take(2)
+            .map(|(range, txs)| (range.to_owned(), txs.to_owned()))
+            .collect();
+        let proven_range = BlockRange::from_block_number(transaction_to_prove[0].block_number);
+        let proven_range_transactions =
+            test_data::filter_transactions_for_block_ranges(&[proven_range], &transactions);
+
+        let up_to_lower = all_block_ranges.keys().nth(1).unwrap().end;
+        let up_to_higher = all_block_ranges.keys().last().unwrap().end;
+
+        let mut transaction_retriever = MockTransactionsRetriever::new();
+        transaction_retriever
+            .expect_get_by_hashes()
+            .returning(move |_, _| Ok(transaction_to_prove.clone()));
+        transaction_retriever
+            .expect_get_by_block_ranges()
+            .returning(move |_| Ok(proven_range_transactions.clone()));
+
+        let mut block_range_root_retriever = MockLegacyBlockRangeRootRetrieverImpl::new();
+        block_range_root_retriever
+            .expect_compute_merkle_map_from_block_range_roots()
+            .returning(move |up_to| {
+                let block_ranges = if up_to == up_to_lower {
+                    lower_block_ranges.clone()
+                } else {
+                    all_block_ranges.clone()
+                };
+                Ok(test_data::compute_mk_map_from_block_ranges_map(
+                    block_ranges,
+                ))
+            });
+
+        let prover = LegacyMithrilProverService::<MKTreeStoreInMemory>::new(
+            Arc::new(transaction_retriever),
+            Arc::new(block_range_root_retriever),
+            1,
+            4,
+            TestLogger::stdout(),
+        );
+
+        // Warm the higher tip first: a stale single-tip cache would then return the
+        // higher tip's root when proving the lower tip.
+        let proof_higher = prover
+            .compute_transactions_proofs(up_to_higher, &transaction_hashes)
+            .await
+            .unwrap();
+        let proof_lower = prover
+            .compute_transactions_proofs(up_to_lower, &transaction_hashes)
+            .await
+            .unwrap();
+
+        proof_higher[0].verify().unwrap();
+        proof_lower[0].verify().unwrap();
+        assert_ne!(
+            proof_lower[0].merkle_root(),
+            proof_higher[0].merkle_root(),
+            "each tip must be proven against its own block-range-roots map"
+        );
+
+        // The same tip is reproducible regardless of which tips were proven before it.
+        let proof_lower_again = prover
+            .compute_transactions_proofs(up_to_lower, &transaction_hashes)
+            .await
+            .unwrap();
+        assert_eq!(
+            proof_lower[0].merkle_root(),
+            proof_lower_again[0].merkle_root()
+        );
     }
 }

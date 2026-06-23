@@ -7,6 +7,15 @@ use crate::http_server::routes::router::RouterState;
 #[derive(Deserialize, Serialize, Debug)]
 struct CardanoTransactionProofQueryParams {
     transaction_hashes: String,
+    /// Optional upper block-number bound for the proof.
+    ///
+    /// When omitted, the proof is served against the aggregator's latest certified
+    /// CardanoTransactions snapshot (the historical behaviour). When set, the proof is
+    /// served against the most recent snapshot certified at or below this block number,
+    /// so a caller can request a *stable, repeatable* proof against a chosen (already
+    /// certified, e.g. on-chain anchored) tip instead of racing the moving latest tip.
+    #[serde(default)]
+    up_to_block_number: Option<u64>,
 }
 
 impl CardanoTransactionProofQueryParams {
@@ -106,7 +115,8 @@ mod handlers {
     use mithril_common::{
         StdResult,
         entities::{
-            BlockNumberOffset, CardanoBlocksTransactionsSnapshot, CardanoTransactionsSnapshot,
+            BlockNumber, BlockNumberOffset, CardanoBlocksTransactionsSnapshot,
+            CardanoTransactionsSnapshot,
         },
         messages::{
             CardanoBlocksProofsMessage, CardanoTransactionsProofsMessage,
@@ -168,12 +178,26 @@ mod handlers {
                 sanitized_hashes.len().try_into().unwrap_or(0),
             );
 
-        match unwrap_to_internal_server_error!(
-            signed_entity_service
-                .get_last_cardano_transaction_snapshot()
-                .await,
-            logger => "proof_cardano_transaction::error"
-        ) {
+        // Prove against the snapshot certified at or below `up_to_block_number` when set,
+        // otherwise the latest certified snapshot.
+        let signed_entity = match transaction_parameters.up_to_block_number {
+            Some(block_number) => unwrap_to_internal_server_error!(
+                signed_entity_service
+                    .get_cardano_transaction_snapshot_at_or_below_block_number(BlockNumber(
+                        block_number
+                    ))
+                    .await,
+                logger => "proof_cardano_transaction::error"
+            ),
+            None => unwrap_to_internal_server_error!(
+                signed_entity_service
+                    .get_last_cardano_transaction_snapshot()
+                    .await,
+                logger => "proof_cardano_transaction::error"
+            ),
+        };
+
+        match signed_entity {
             Some(signed_entity) => {
                 let message = unwrap_to_internal_server_error!(
                     build_response_message(prover_service, signed_entity, sanitized_hashes).await,
@@ -226,12 +250,26 @@ mod handlers {
                 sanitized_hashes.len().try_into().unwrap_or(0),
             );
 
-        match unwrap_to_internal_server_error!(
-            signed_entity_service
-                .get_last_cardano_blocks_transactions_snapshot()
-                .await,
-            logger => "proof_v2_cardano_transaction::error"
-        ) {
+        // Prove against the snapshot certified at or below `up_to_block_number` when set,
+        // otherwise the latest certified snapshot.
+        let signed_entity = match transaction_parameters.up_to_block_number {
+            Some(block_number) => unwrap_to_internal_server_error!(
+                signed_entity_service
+                    .get_cardano_blocks_transactions_snapshot_at_or_below_block_number(
+                        BlockNumber(block_number)
+                    )
+                    .await,
+                logger => "proof_v2_cardano_transaction::error"
+            ),
+            None => unwrap_to_internal_server_error!(
+                signed_entity_service
+                    .get_last_cardano_blocks_transactions_snapshot()
+                    .await,
+                logger => "proof_v2_cardano_transaction::error"
+            ),
+        };
+
+        match signed_entity {
             Some(signed_entity) => {
                 let message = unwrap_to_internal_server_error!(
                     build_response_message_for_v2_cardano_transaction(
@@ -426,7 +464,8 @@ mod tests {
     use mithril_common::{
         MITHRIL_CLIENT_TYPE_HEADER, MITHRIL_ORIGIN_TAG_HEADER,
         entities::{
-            BlockNumber, CardanoTransactionsSetProof, CardanoTransactionsSnapshot, MkSetProof,
+            BlockNumber, CardanoBlocksTransactionsSnapshot, CardanoTransactionsSetProof,
+            CardanoTransactionsSnapshot, MkSetProof,
         },
         signable_builder::SignedEntity,
         test::{
@@ -663,6 +702,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proof_cardano_transaction_with_up_to_block_number_uses_historical_snapshot() {
+        let mut dependency_manager = initialize_dependencies!().await;
+        let mut mock_signed_entity_service = MockSignedEntityService::new();
+        // When up_to_block_number is provided, the latest-snapshot path must NOT be used.
+        mock_signed_entity_service
+            .expect_get_last_cardano_transaction_snapshot()
+            .never();
+        mock_signed_entity_service
+            .expect_get_cardano_transaction_snapshot_at_or_below_block_number()
+            .withf(|block_number| *block_number == BlockNumber(2309))
+            .returning(|_| Ok(Some(SignedEntity::<CardanoTransactionsSnapshot>::dummy())));
+        dependency_manager.signed_entity_service = Arc::new(mock_signed_entity_service);
+
+        let mut mock_prover_service = MockLegacyProverService::new();
+        mock_prover_service
+            .expect_compute_transactions_proofs()
+            .returning(|_, _| Ok(vec![CardanoTransactionsSetProof::dummy()]));
+        dependency_manager.legacy_prover_service = Arc::new(mock_prover_service);
+
+        let method = Method::GET.as_str();
+        let path = "/proof/cardano-transaction";
+
+        let response = request()
+            .method(method)
+            .path(&format!(
+                "{path}?transaction_hashes={},{}&up_to_block_number=2309",
+                fake_data::transaction_hashes()[0],
+                fake_data::transaction_hashes()[1]
+            ))
+            .reply(&setup_router(RouterState::new_with_dummy_config(Arc::new(
+                dependency_manager,
+            ))))
+            .await;
+
+        APISpec::verify_conformity(
+            APISpec::get_default_spec_file_from(crate::http_server::API_SPEC_LOCATION),
+            method,
+            path,
+            "application/json",
+            &Null,
+            &response,
+            &StatusCode::OK,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn proof_cardano_transaction_with_up_to_block_number_not_found_returns_404() {
+        let mut dependency_manager = initialize_dependencies!().await;
+        let mut mock_signed_entity_service = MockSignedEntityService::new();
+        mock_signed_entity_service
+            .expect_get_cardano_transaction_snapshot_at_or_below_block_number()
+            .returning(|_| Ok(None));
+        dependency_manager.signed_entity_service = Arc::new(mock_signed_entity_service);
+
+        let method = Method::GET.as_str();
+        let path = "/proof/cardano-transaction";
+
+        let response = request()
+            .method(method)
+            .path(&format!(
+                "{path}?transaction_hashes={}&up_to_block_number=1",
+                fake_data::transaction_hashes()[0],
+            ))
+            .reply(&setup_router(RouterState::new_with_dummy_config(Arc::new(
+                dependency_manager,
+            ))))
+            .await;
+
+        APISpec::verify_conformity(
+            APISpec::get_default_spec_file_from(crate::http_server::API_SPEC_LOCATION),
+            method,
+            path,
+            "application/json",
+            &Null,
+            &response,
+            &StatusCode::NOT_FOUND,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn proof_v2_cardano_transaction_ok_some_proof() {
         let mut dependency_manager = initialize_dependencies!().await;
         let mut mock_signed_entity_service = MockSignedEntityService::new();
@@ -701,6 +822,92 @@ mod tests {
             &Null,
             &response,
             &StatusCode::OK,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn proof_v2_cardano_transaction_with_up_to_block_number_uses_historical_snapshot() {
+        let mut dependency_manager = initialize_dependencies!().await;
+        let mut mock_signed_entity_service = MockSignedEntityService::new();
+        // When up_to_block_number is provided, the latest-snapshot path must NOT be used.
+        mock_signed_entity_service
+            .expect_get_last_cardano_blocks_transactions_snapshot()
+            .never();
+        mock_signed_entity_service
+            .expect_get_cardano_blocks_transactions_snapshot_at_or_below_block_number()
+            .withf(|block_number| *block_number == BlockNumber(2309))
+            .returning(|_| {
+                Ok(Some(
+                    SignedEntity::<CardanoBlocksTransactionsSnapshot>::dummy(),
+                ))
+            });
+        dependency_manager.signed_entity_service = Arc::new(mock_signed_entity_service);
+
+        let mut mock_prover_service = MockProverService::new();
+        mock_prover_service
+            .expect_compute_transactions_proofs()
+            .returning(|_, _| Ok(Some(MkSetProof::dummy())));
+        dependency_manager.prover_service = Arc::new(mock_prover_service);
+
+        let method = Method::GET.as_str();
+        let path = "/proof/v2/cardano-transaction";
+
+        let response = request()
+            .method(method)
+            .path(&format!(
+                "{path}?transaction_hashes={},{}&up_to_block_number=2309",
+                fake_data::transaction_hashes()[0],
+                fake_data::transaction_hashes()[1]
+            ))
+            .reply(&setup_router(RouterState::new_with_dummy_config(Arc::new(
+                dependency_manager,
+            ))))
+            .await;
+
+        APISpec::verify_conformity(
+            APISpec::get_default_spec_file_from(crate::http_server::API_SPEC_LOCATION),
+            method,
+            path,
+            "application/json",
+            &Null,
+            &response,
+            &StatusCode::OK,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn proof_v2_cardano_transaction_with_up_to_block_number_not_found_returns_404() {
+        let mut dependency_manager = initialize_dependencies!().await;
+        let mut mock_signed_entity_service = MockSignedEntityService::new();
+        mock_signed_entity_service
+            .expect_get_cardano_blocks_transactions_snapshot_at_or_below_block_number()
+            .returning(|_| Ok(None));
+        dependency_manager.signed_entity_service = Arc::new(mock_signed_entity_service);
+
+        let method = Method::GET.as_str();
+        let path = "/proof/v2/cardano-transaction";
+
+        let response = request()
+            .method(method)
+            .path(&format!(
+                "{path}?transaction_hashes={}&up_to_block_number=1",
+                fake_data::transaction_hashes()[0],
+            ))
+            .reply(&setup_router(RouterState::new_with_dummy_config(Arc::new(
+                dependency_manager,
+            ))))
+            .await;
+
+        APISpec::verify_conformity(
+            APISpec::get_default_spec_file_from(crate::http_server::API_SPEC_LOCATION),
+            method,
+            path,
+            "application/json",
+            &Null,
+            &response,
+            &StatusCode::NOT_FOUND,
         )
         .unwrap();
     }
@@ -1150,6 +1357,7 @@ mod tests {
         // as some rust dedup methods only remove consecutive duplicates
         let params = CardanoTransactionProofQueryParams {
             transaction_hashes: format!("{tx1},{tx2},{tx2},{tx1},{tx2}",),
+            up_to_block_number: None,
         };
 
         assert_equivalent!(params.sanitize(), vec![tx1, tx2]);

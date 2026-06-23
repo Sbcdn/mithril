@@ -13,6 +13,7 @@ impl DependenciesBuilder {
         let mk_map_pool_size = self
             .configuration
             .cardano_blocks_transactions_prover_cache_pool_size();
+        let cache_max_entries = self.configuration.cardano_transactions_prover_cache_max_entries();
         let transaction_retriever = self.get_chain_data_repository().await?;
         let block_range_root_retriever = self.get_chain_data_repository().await?;
         let logger = self.root_logger();
@@ -20,6 +21,7 @@ impl DependenciesBuilder {
             transaction_retriever,
             block_range_root_retriever,
             mk_map_pool_size,
+            cache_max_entries,
             logger,
         );
 
@@ -34,6 +36,7 @@ impl DependenciesBuilder {
     /// Build Legacy Prover service
     pub async fn build_legacy_prover_service(&mut self) -> Result<Arc<dyn LegacyProverService>> {
         let mk_map_pool_size = self.configuration.cardano_transactions_prover_cache_pool_size();
+        let cache_max_entries = self.configuration.cardano_transactions_prover_cache_max_entries();
         let transaction_retriever = self.get_chain_data_repository().await?;
         let block_range_root_retriever = self.get_chain_data_repository().await?;
         let logger = self.root_logger();
@@ -41,6 +44,7 @@ impl DependenciesBuilder {
             transaction_retriever,
             block_range_root_retriever,
             mk_map_pool_size,
+            cache_max_entries,
             logger,
         );
 

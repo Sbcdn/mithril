@@ -1,40 +1,54 @@
 use sqlite::Value;
 
 use mithril_common::StdResult;
-use mithril_common::entities::{Epoch, SignedEntityTypeDiscriminants};
+use mithril_common::entities::{BlockNumber, Epoch, SignedEntityTypeDiscriminants};
 use mithril_persistence::sqlite::{Query, SourceAlias, SqLiteEntity, WhereCondition};
 
 use crate::database::record::SignedEntityRecord;
 
+/// Default result ordering, by insertion order (most recent first).
+const ORDER_BY_ROWID_DESC: &str = "ROWID desc";
+/// Result ordering for the "at or below block number" queries: highest certified block
+/// first, independent of physical insertion order (`ROWID` only breaks ties).
+const ORDER_BY_BLOCK_NUMBER_DESC: &str =
+    "cast(json_extract(beacon, '$.block_number') as integer) desc, ROWID desc";
+
 /// Simple queries to retrieve [SignedEntityRecord] from the sqlite database.
 pub struct GetSignedEntityRecordQuery {
     condition: WhereCondition,
+    order_by: &'static str,
 }
 
 impl GetSignedEntityRecordQuery {
+    fn new(condition: WhereCondition) -> Self {
+        Self {
+            condition,
+            order_by: ORDER_BY_ROWID_DESC,
+        }
+    }
+
+    fn ordered_by(mut self, order_by: &'static str) -> Self {
+        self.order_by = order_by;
+        self
+    }
+
     #[cfg(test)]
     pub fn all() -> Self {
-        Self {
-            condition: WhereCondition::default(),
-        }
+        Self::new(WhereCondition::default())
     }
 
     pub fn by_signed_entity_id(signed_entity_id: &str) -> Self {
-        Self {
-            condition: WhereCondition::new(
-                "signed_entity_id = ?*",
-                vec![Value::String(signed_entity_id.to_owned())],
-            ),
-        }
+        Self::new(WhereCondition::new(
+            "signed_entity_id = ?*",
+            vec![Value::String(signed_entity_id.to_owned())],
+        ))
     }
 
     pub fn by_certificate_id(certificate_id: &str) -> Self {
-        Self {
-            condition: WhereCondition::new(
-                "certificate_id = ?*",
-                vec![Value::String(certificate_id.to_owned())],
-            ),
-        }
+        Self::new(WhereCondition::new(
+            "certificate_id = ?*",
+            vec![Value::String(certificate_id.to_owned())],
+        ))
     }
 
     pub fn by_certificates_ids(certificates_ids: &[&str]) -> Self {
@@ -43,9 +57,7 @@ impl GetSignedEntityRecordQuery {
             .map(|id| Value::String(id.to_string()))
             .collect();
 
-        Self {
-            condition: WhereCondition::where_in("certificate_id", ids_values),
-        }
+        Self::new(WhereCondition::where_in("certificate_id", ids_values))
     }
 
     pub fn by_signed_entity_type(
@@ -53,12 +65,10 @@ impl GetSignedEntityRecordQuery {
     ) -> StdResult<Self> {
         let signed_entity_type_id: i64 = signed_entity_type.index() as i64;
 
-        Ok(Self {
-            condition: WhereCondition::new(
-                "signed_entity_type_id = ?*",
-                vec![Value::Integer(signed_entity_type_id)],
-            ),
-        })
+        Ok(Self::new(WhereCondition::new(
+            "signed_entity_type_id = ?*",
+            vec![Value::Integer(signed_entity_type_id)],
+        )))
     }
 
     pub fn by_signed_entity_type_and_epoch(
@@ -68,12 +78,49 @@ impl GetSignedEntityRecordQuery {
         let signed_entity_type_id = signed_entity_type.index() as i64;
         let epoch = *epoch as i64;
 
-        Self {
-            condition: WhereCondition::new(
-                "signed_entity_type_id = ?* and epoch = ?*",
-                vec![Value::Integer(signed_entity_type_id), Value::Integer(epoch)],
-            ),
-        }
+        Self::new(WhereCondition::new(
+            "signed_entity_type_id = ?* and epoch = ?*",
+            vec![Value::Integer(signed_entity_type_id), Value::Integer(epoch)],
+        ))
+    }
+
+    /// Retrieve the most recent [CardanoTransactions][SignedEntityTypeDiscriminants::CardanoTransactions]
+    /// signed entity certified at or below the given block number.
+    ///
+    /// The CardanoTransactions beacon is stored as a JSON object
+    /// (`{"epoch":E,"block_number":B}`); the query filters and orders on the extracted
+    /// `block_number`, so `fetch_first` returns the highest certified block at or below
+    /// the bound regardless of the rows' physical insertion order.
+    pub fn cardano_transaction_at_or_below_block_number(block_number: BlockNumber) -> Self {
+        let signed_entity_type_id =
+            SignedEntityTypeDiscriminants::CardanoTransactions.index() as i64;
+        let block_number = *block_number as i64;
+
+        Self::new(WhereCondition::new(
+            "signed_entity_type_id = ?* and cast(json_extract(beacon, '$.block_number') as integer) <= ?*",
+            vec![Value::Integer(signed_entity_type_id), Value::Integer(block_number)],
+        ))
+        .ordered_by(ORDER_BY_BLOCK_NUMBER_DESC)
+    }
+
+    /// Retrieve the most recent
+    /// [CardanoBlocksTransactions][SignedEntityTypeDiscriminants::CardanoBlocksTransactions]
+    /// (v2) signed entity certified at or below the given block number.
+    ///
+    /// The CardanoBlocksTransactions beacon is stored as a JSON object
+    /// (`{"epoch":E,"block_number":B,"block_number_offset":O}`); like the v1 variant the
+    /// query filters and orders on the extracted `block_number`, so `fetch_first` returns
+    /// the highest certified block at or below the bound regardless of insertion order.
+    pub fn cardano_blocks_transactions_at_or_below_block_number(block_number: BlockNumber) -> Self {
+        let signed_entity_type_id =
+            SignedEntityTypeDiscriminants::CardanoBlocksTransactions.index() as i64;
+        let block_number = *block_number as i64;
+
+        Self::new(WhereCondition::new(
+            "signed_entity_type_id = ?* and cast(json_extract(beacon, '$.block_number') as integer) <= ?*",
+            vec![Value::Integer(signed_entity_type_id), Value::Integer(block_number)],
+        ))
+        .ordered_by(ORDER_BY_BLOCK_NUMBER_DESC)
     }
 }
 
@@ -87,8 +134,9 @@ impl Query for GetSignedEntityRecordQuery {
     fn get_definition(&self, condition: &str) -> String {
         let aliases = SourceAlias::new(&[("{:signed_entity:}", "se")]);
         let projection = Self::Entity::get_projection().expand(aliases);
+        let order_by = self.order_by;
         format!(
-            "select {projection} from signed_entity as se where {condition} order by ROWID desc"
+            "select {projection} from signed_entity as se where {condition} order by {order_by}"
         )
     }
 }
@@ -167,6 +215,155 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(vec![records[2].clone()], fetched_cdb_records);
+    }
+
+    fn cardano_transaction_record(block_number: u64) -> SignedEntityRecord {
+        use mithril_common::entities::{BlockNumber, CardanoTransactionsSnapshot, Epoch};
+
+        let artifact = CardanoTransactionsSnapshot::new(
+            format!("merkle-root-{block_number}"),
+            BlockNumber(block_number),
+        );
+        SignedEntityRecord {
+            signed_entity_id: format!("ct-{block_number}"),
+            signed_entity_type: SignedEntityType::CardanoTransactions(
+                Epoch(1),
+                BlockNumber(block_number),
+            ),
+            certificate_id: format!("certificate-ct-{block_number}"),
+            artifact: serde_json::to_string(&artifact).unwrap(),
+            created_at: chrono::DateTime::default(),
+        }
+    }
+
+    #[test]
+    fn cardano_transaction_at_or_below_block_number_returns_highest_certified_at_or_below() {
+        // Inserted in increasing block order (as the chain advances).
+        let records = vec![
+            cardano_transaction_record(100),
+            cardano_transaction_record(200),
+            cardano_transaction_record(300),
+        ];
+        let connection = create_database(&records);
+
+        let retrieved: Vec<SignedEntityRecord> = connection
+            .fetch_collect(
+                GetSignedEntityRecordQuery::cardano_transaction_at_or_below_block_number(
+                    BlockNumber(250),
+                ),
+            )
+            .unwrap();
+
+        // 100 and 200 qualify (<= 250); 300 is excluded. ROWID-desc puts 200 first,
+        // which is what `fetch_first` returns at the route.
+        assert_eq!(records[1], retrieved[0]);
+        assert!(!retrieved.contains(&records[2]));
+    }
+
+    #[test]
+    fn cardano_transaction_at_or_below_block_number_ignores_other_signed_entity_types() {
+        let cardano_stake_distribution = SignedEntityRecord::fake_with_signed_entity(
+            SignedEntityType::CardanoStakeDistribution(Epoch(4)),
+        );
+        let connection =
+            create_database(&[cardano_stake_distribution, cardano_transaction_record(150)]);
+
+        let retrieved: Vec<SignedEntityRecord> = connection
+            .fetch_collect(
+                GetSignedEntityRecordQuery::cardano_transaction_at_or_below_block_number(
+                    BlockNumber(1_000),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(vec![cardano_transaction_record(150)], retrieved);
+    }
+
+    #[test]
+    fn cardano_transaction_at_or_below_block_number_orders_by_block_not_insertion_order() {
+        // Inserted with the higher block first, so the highest-at-or-below row does not
+        // have the highest ROWID (as can happen after a certificate-hash migration that
+        // deletes and re-inserts rows). The result must still be the highest block.
+        let connection =
+            create_database(&[cardano_transaction_record(200), cardano_transaction_record(100)]);
+
+        let retrieved: Vec<SignedEntityRecord> = connection
+            .fetch_collect(
+                GetSignedEntityRecordQuery::cardano_transaction_at_or_below_block_number(
+                    BlockNumber(250),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(cardano_transaction_record(200), retrieved[0]);
+    }
+
+    fn cardano_blocks_transactions_record(block_number: u64) -> SignedEntityRecord {
+        use mithril_common::entities::{
+            BlockNumber, BlockNumberOffset, CardanoBlocksTransactionsSnapshot, Epoch,
+        };
+
+        let artifact = CardanoBlocksTransactionsSnapshot::new(
+            format!("merkle-root-{block_number}"),
+            BlockNumber(block_number),
+            BlockNumberOffset(15),
+        );
+        SignedEntityRecord {
+            signed_entity_id: format!("bt-{block_number}"),
+            signed_entity_type: SignedEntityType::CardanoBlocksTransactions(
+                Epoch(1),
+                BlockNumber(block_number),
+                BlockNumberOffset(15),
+            ),
+            certificate_id: format!("certificate-bt-{block_number}"),
+            artifact: serde_json::to_string(&artifact).unwrap(),
+            created_at: chrono::DateTime::default(),
+        }
+    }
+
+    #[test]
+    fn cardano_blocks_transactions_at_or_below_block_number_returns_highest_certified_at_or_below()
+    {
+        // Inserted in increasing block order (as the chain advances).
+        let records = vec![
+            cardano_blocks_transactions_record(100),
+            cardano_blocks_transactions_record(200),
+            cardano_blocks_transactions_record(300),
+        ];
+        let connection = create_database(&records);
+
+        let retrieved: Vec<SignedEntityRecord> = connection
+            .fetch_collect(
+                GetSignedEntityRecordQuery::cardano_blocks_transactions_at_or_below_block_number(
+                    BlockNumber(250),
+                ),
+            )
+            .unwrap();
+
+        // 100 and 200 qualify (<= 250); 300 is excluded. ROWID-desc puts 200 first,
+        // which is what `fetch_first` returns at the route.
+        assert_eq!(records[1], retrieved[0]);
+        assert!(!retrieved.contains(&records[2]));
+    }
+
+    #[test]
+    fn cardano_blocks_transactions_at_or_below_block_number_ignores_other_signed_entity_types() {
+        // A v1 CardanoTransactions record at the same block must NOT be returned by the
+        // v2 query (different discriminant), and vice versa.
+        let connection = create_database(&[
+            cardano_transaction_record(150),
+            cardano_blocks_transactions_record(150),
+        ]);
+
+        let retrieved: Vec<SignedEntityRecord> = connection
+            .fetch_collect(
+                GetSignedEntityRecordQuery::cardano_blocks_transactions_at_or_below_block_number(
+                    BlockNumber(1_000),
+                ),
+            )
+            .unwrap();
+
+        assert_eq!(vec![cardano_blocks_transactions_record(150)], retrieved);
     }
 
     #[test]

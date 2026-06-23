@@ -630,6 +630,18 @@ paths:
               examples:
                 - "6dbb104ed68481ef829a26a20142916d17985e01774d72d72c2f"
           explode: false
+        - name: up_to_block_number
+          in: query
+          description: |
+            Optional upper block-number bound. When set, the proof is served against the most
+            recent Cardano transactions snapshot certified at or below this block number — a
+            stable, repeatable proof against a chosen (already certified) tip — instead of the
+            latest snapshot. When omitted, the latest certified snapshot is used.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
       responses:
         "200":
           description: Cardano transaction proofs found
@@ -650,8 +662,9 @@ paths:
     get:
       summary: Get the proofs of a Cardano transaction list from Cardano Blocks and Transactions snapshots
       description: |
-        Returns the transaction hashes and the corresponding proofs from the latest
-        Cardano Blocks and Transactions signed entity.
+        Returns the transaction hashes and the corresponding proofs from a
+        Cardano Blocks and Transactions signed entity (the latest by default, or
+        the one certified at or below `up_to_block_number` when set).
       parameters:
         - name: transaction_hashes
           in: query
@@ -665,6 +678,18 @@ paths:
               examples:
                 - "6dbb104ed68481ef829a26a20142916d17985e01774d72d72c2f"
           explode: false
+        - name: up_to_block_number
+          in: query
+          description: |
+            Optional upper block-number bound. When set, the proof is served against the most
+            recent Cardano Blocks and Transactions snapshot certified at or below this block
+            number — a stable, repeatable proof against a chosen (already certified) tip —
+            instead of the latest snapshot. When omitted, the latest certified snapshot is used.
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
       responses:
         "200":
           description: Cardano transaction proofs found

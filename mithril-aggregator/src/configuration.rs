@@ -254,6 +254,11 @@ pub trait ConfigurationSource {
         panic!("cardano_transactions_prover_cache_pool_size is not implemented.");
     }
 
+    /// Maximum number of certified tips cached by the Cardano transactions prover
+    fn cardano_transactions_prover_cache_max_entries(&self) -> usize {
+        panic!("cardano_transactions_prover_cache_max_entries is not implemented.");
+    }
+
     /// Cardano transactions database connection pool size
     fn cardano_transactions_database_connection_pool_size(&self) -> usize {
         panic!("cardano_transactions_database_connection_pool_size is not implemented.");
@@ -626,6 +631,10 @@ pub struct ServeCommandConfiguration {
     /// Cardano transactions prover cache pool size
     pub cardano_transactions_prover_cache_pool_size: usize,
 
+    /// Maximum number of certified tips cached by the Cardano transactions prover
+    /// before least-recently-used eviction
+    pub cardano_transactions_prover_cache_max_entries: usize,
+
     /// Cardano transactions database connection pool size
     pub cardano_transactions_database_connection_pool_size: usize,
 
@@ -826,6 +835,7 @@ impl ServeCommandConfiguration {
             cardano_blocks_transactions_prover_cache_pool_size: 3,
             cardano_blocks_transactions_database_connection_pool_size: 5,
             cardano_transactions_prover_cache_pool_size: 3,
+            cardano_transactions_prover_cache_max_entries: 32,
             cardano_transactions_database_connection_pool_size: 5,
             cardano_transactions_signing_config: Some(CardanoTransactionsSigningConfig {
                 security_parameter: BlockNumberOffset(120),
@@ -1006,6 +1016,10 @@ impl ConfigurationSource for ServeCommandConfiguration {
         self.cardano_transactions_prover_cache_pool_size
     }
 
+    fn cardano_transactions_prover_cache_max_entries(&self) -> usize {
+        self.cardano_transactions_prover_cache_max_entries
+    }
+
     fn cardano_transactions_database_connection_pool_size(&self) -> usize {
         self.cardano_transactions_database_connection_pool_size
     }
@@ -1132,6 +1146,9 @@ pub struct DefaultConfiguration {
     /// Cardano transactions prover cache pool size
     pub cardano_transactions_prover_cache_pool_size: u32,
 
+    /// Maximum number of distinct certified tips cached by the Cardano transactions prover
+    pub cardano_transactions_prover_cache_max_entries: u32,
+
     /// Cardano transactions database connection pool size
     pub cardano_transactions_database_connection_pool_size: u32,
 
@@ -1194,6 +1211,7 @@ impl Default for DefaultConfiguration {
             cardano_blocks_transactions_prover_cache_pool_size: 10,
             cardano_blocks_transactions_database_connection_pool_size: 10,
             cardano_transactions_prover_cache_pool_size: 10,
+            cardano_transactions_prover_cache_max_entries: 32,
             cardano_transactions_database_connection_pool_size: 10,
             cardano_transactions_signing_config: CardanoTransactionsSigningConfig {
                 security_parameter: BlockNumberOffset(3000),
@@ -1270,6 +1288,11 @@ impl Source for DefaultConfiguration {
             result,
             &namespace,
             myself.cardano_transactions_prover_cache_pool_size
+        );
+        register_config_value!(
+            result,
+            &namespace,
+            myself.cardano_transactions_prover_cache_max_entries
         );
         register_config_value!(
             result,

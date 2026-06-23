@@ -4,7 +4,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 
 use mithril_common::StdResult;
-use mithril_common::entities::{Epoch, SignedEntityTypeDiscriminants};
+use mithril_common::entities::{BlockNumber, Epoch, SignedEntityTypeDiscriminants};
 use mithril_persistence::sqlite::{ConnectionExtensions, SqliteConnection};
 
 use crate::database::query::{
@@ -56,6 +56,20 @@ pub trait SignedEntityStorer: Sync + Send {
     async fn get_cardano_stake_distribution_signed_entity_by_epoch(
         &self,
         epoch: Epoch,
+    ) -> StdResult<Option<SignedEntityRecord>>;
+
+    /// Get the most recent Cardano transactions signed entity certified at or below the
+    /// given block number.
+    async fn get_cardano_transaction_signed_entity_at_or_below_block_number(
+        &self,
+        block_number: BlockNumber,
+    ) -> StdResult<Option<SignedEntityRecord>>;
+
+    /// Get the most recent Cardano blocks and transactions (v2) signed entity certified
+    /// at or below the given block number.
+    async fn get_cardano_blocks_transactions_signed_entity_at_or_below_block_number(
+        &self,
+        block_number: BlockNumber,
     ) -> StdResult<Option<SignedEntityRecord>>;
 
     /// Perform an update for all the given signed entities.
@@ -170,6 +184,40 @@ impl SignedEntityStorer for SignedEntityStore {
                 &SignedEntityTypeDiscriminants::CardanoStakeDistribution,
                 epoch,
             ))
+    }
+
+    async fn get_cardano_transaction_signed_entity_at_or_below_block_number(
+        &self,
+        block_number: BlockNumber,
+    ) -> StdResult<Option<SignedEntityRecord>> {
+        self.connection
+            .fetch_first(
+                GetSignedEntityRecordQuery::cardano_transaction_at_or_below_block_number(
+                    block_number,
+                ),
+            )
+            .with_context(|| {
+                format!(
+                    "get cardano transaction signed entity at or below block number failure, block_number: {block_number}"
+                )
+            })
+    }
+
+    async fn get_cardano_blocks_transactions_signed_entity_at_or_below_block_number(
+        &self,
+        block_number: BlockNumber,
+    ) -> StdResult<Option<SignedEntityRecord>> {
+        self.connection
+            .fetch_first(
+                GetSignedEntityRecordQuery::cardano_blocks_transactions_at_or_below_block_number(
+                    block_number,
+                ),
+            )
+            .with_context(|| {
+                format!(
+                    "get cardano blocks transactions signed entity at or below block number failure, block_number: {block_number}"
+                )
+            })
     }
 
     async fn update_signed_entities(
@@ -356,6 +404,145 @@ mod tests {
 
         assert_eq!(records_to_update, updated_records);
         assert_eq!(expected_records, stored_records);
+    }
+
+    fn cardano_transaction_record(block_number: u64) -> SignedEntityRecord {
+        use mithril_common::entities::{
+            BlockNumber, CardanoTransactionsSnapshot, SignedEntityType,
+        };
+
+        let artifact = CardanoTransactionsSnapshot::new(
+            format!("merkle-root-{block_number}"),
+            BlockNumber(block_number),
+        );
+        SignedEntityRecord {
+            signed_entity_id: format!("ct-{block_number}"),
+            signed_entity_type: SignedEntityType::CardanoTransactions(
+                Epoch(1),
+                BlockNumber(block_number),
+            ),
+            certificate_id: format!("certificate-ct-{block_number}"),
+            artifact: serde_json::to_string(&artifact).unwrap(),
+            created_at: chrono::DateTime::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_cardano_transaction_signed_entity_at_or_below_block_number_when_nothing_found() {
+        let connection = main_db_connection().unwrap();
+        let store = SignedEntityStore::new(Arc::new(connection));
+
+        let record = store
+            .get_cardano_transaction_signed_entity_at_or_below_block_number(
+                mithril_common::entities::BlockNumber(100),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(None, record);
+    }
+
+    #[tokio::test]
+    async fn get_cardano_transaction_signed_entity_at_or_below_block_number_returns_highest_at_or_below()
+     {
+        let records = vec![
+            cardano_transaction_record(100),
+            cardano_transaction_record(200),
+            cardano_transaction_record(300),
+        ];
+        let connection = main_db_connection().unwrap();
+        insert_signed_entities(&connection, records.clone()).unwrap();
+        let store = SignedEntityStore::new(Arc::new(connection));
+
+        // Exact match (the control-plane case: up_to == a certified tip).
+        let exact = store
+            .get_cardano_transaction_signed_entity_at_or_below_block_number(
+                mithril_common::entities::BlockNumber(200),
+            )
+            .await
+            .unwrap();
+        assert_eq!(Some(records[1].clone()), exact);
+
+        // Between certified tips: pick the latest one not exceeding the bound.
+        let below = store
+            .get_cardano_transaction_signed_entity_at_or_below_block_number(
+                mithril_common::entities::BlockNumber(250),
+            )
+            .await
+            .unwrap();
+        assert_eq!(Some(records[1].clone()), below);
+
+        // Below the earliest certified tip: nothing.
+        let none = store
+            .get_cardano_transaction_signed_entity_at_or_below_block_number(
+                mithril_common::entities::BlockNumber(50),
+            )
+            .await
+            .unwrap();
+        assert_eq!(None, none);
+    }
+
+    fn cardano_blocks_transactions_record(block_number: u64) -> SignedEntityRecord {
+        use mithril_common::entities::{
+            BlockNumber, BlockNumberOffset, CardanoBlocksTransactionsSnapshot, SignedEntityType,
+        };
+
+        let artifact = CardanoBlocksTransactionsSnapshot::new(
+            format!("merkle-root-{block_number}"),
+            BlockNumber(block_number),
+            BlockNumberOffset(15),
+        );
+        SignedEntityRecord {
+            signed_entity_id: format!("bt-{block_number}"),
+            signed_entity_type: SignedEntityType::CardanoBlocksTransactions(
+                Epoch(1),
+                BlockNumber(block_number),
+                BlockNumberOffset(15),
+            ),
+            certificate_id: format!("certificate-bt-{block_number}"),
+            artifact: serde_json::to_string(&artifact).unwrap(),
+            created_at: chrono::DateTime::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_cardano_blocks_transactions_signed_entity_at_or_below_block_number_returns_highest_at_or_below()
+     {
+        let records = vec![
+            cardano_blocks_transactions_record(100),
+            cardano_blocks_transactions_record(200),
+            cardano_blocks_transactions_record(300),
+        ];
+        let connection = main_db_connection().unwrap();
+        insert_signed_entities(&connection, records.clone()).unwrap();
+        let store = SignedEntityStore::new(Arc::new(connection));
+
+        // Exact match (the control-plane case: up_to == a certified tip).
+        let exact = store
+            .get_cardano_blocks_transactions_signed_entity_at_or_below_block_number(
+                mithril_common::entities::BlockNumber(200),
+            )
+            .await
+            .unwrap();
+        assert_eq!(Some(records[1].clone()), exact);
+
+        // Between certified tips: pick the latest one not exceeding the bound.
+        let below = store
+            .get_cardano_blocks_transactions_signed_entity_at_or_below_block_number(
+                mithril_common::entities::BlockNumber(250),
+            )
+            .await
+            .unwrap();
+        assert_eq!(Some(records[1].clone()), below);
+
+        // Below the earliest certified tip: nothing.
+        let none = store
+            .get_cardano_blocks_transactions_signed_entity_at_or_below_block_number(
+                mithril_common::entities::BlockNumber(50),
+            )
+            .await
+            .unwrap();
+        assert_eq!(None, none);
     }
 
     #[tokio::test]
