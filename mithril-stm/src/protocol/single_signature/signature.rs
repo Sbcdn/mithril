@@ -30,6 +30,26 @@ pub struct SingleSignature {
 }
 
 impl SingleSignature {
+    /// Construct a `SingleSignature` from already-built components.
+    /// Exposed for custom serializer / deserializer consumers (e.g. risc0).
+    pub fn new(
+        concatenation_signature: SingleSignatureForConcatenation,
+        signer_index: SignerIndex,
+        #[cfg(feature = "future_snark")] snark_signature: Option<SingleSignatureForSnark>,
+    ) -> Self {
+        Self {
+            concatenation_signature,
+            signer_index,
+            #[cfg(feature = "future_snark")]
+            snark_signature,
+        }
+    }
+
+    /// Borrow the concatenation-proof-system signature. Exposed for custom serializer consumers.
+    pub fn concatenation_signature(&self) -> &SingleSignatureForConcatenation {
+        &self.concatenation_signature
+    }
+
     /// Verify a `SingleSignature` by validating the underlying single signature for proof system.
     pub fn verify<D: MembershipDigest>(
         &self,

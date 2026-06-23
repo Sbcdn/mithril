@@ -10,4 +10,4 @@ pub use clerk::ConcatenationClerk;
 pub(super) use eligibility::is_lottery_won;
 pub use proof::ConcatenationProof;
 pub(crate) use signer::ConcatenationProofSigner;
-pub(crate) use single_signature::SingleSignatureForConcatenation;
+pub use single_signature::SingleSignatureForConcatenation;
