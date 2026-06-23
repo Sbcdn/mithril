@@ -83,7 +83,24 @@ pub trait SignerRecorder: Sync + Send {
 #[async_trait]
 pub trait SignerRegistrationVerifier: Send + Sync {
     /// Verifies a [Signer] registration.
+    ///
+    /// The KES evolution count is derived from the *current* KES period, which is only
+    /// correct when verifying at the moment of original registration (leader path).
     async fn verify(
+        &self,
+        signer: &Signer,
+        stake_distribution: &StakeDistribution,
+    ) -> StdResult<SignerWithStake>;
+
+    /// Verifies a [Signer] registration synchronized from a leader aggregator.
+    ///
+    /// Unlike [`verify`][Self::verify], this uses the KES evolution count carried in the
+    /// synchronized registration (the count *at the time of signature*, computed by the
+    /// producing aggregator at original registration) rather than recomputing it from the
+    /// current KES period — which would over-count, and thus reject every signer, as the
+    /// chain advances past the registration period. Falls back to the current-period
+    /// recompute only when the synchronized registration carries no evolution count.
+    async fn verify_synchronized(
         &self,
         signer: &Signer,
         stake_distribution: &StakeDistribution,
