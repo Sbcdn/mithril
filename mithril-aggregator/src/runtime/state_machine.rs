@@ -1,10 +1,10 @@
 use anyhow::Context;
 use chrono::Local;
-use slog::{Logger, info, trace};
+use slog::{Logger, info, trace, warn};
 use std::fmt::Display;
 use std::sync::Arc;
 
-use mithril_common::entities::TimePoint;
+use mithril_common::entities::{SignedEntityType, TimePoint};
 use mithril_common::logging::LoggerExtensions;
 
 use crate::AggregatorConfig;
@@ -305,14 +305,39 @@ impl AggregatorRuntime {
             self.logger,
             "Launching transition from SIGNING to READY state"
         );
-        let certificate = self
+        let certificate = match self
             .runner
             .create_certificate(&state.open_message.signed_entity_type)
             .await?
-            .ok_or_else(|| RuntimeError::KeepState {
-                message: "not enough signature yet to create a certificate, waiting…".to_string(),
-                nested_error: None,
-            })?;
+        {
+            Some(certificate) => certificate,
+            None => {
+                // A follower aggregator cannot produce CardanoTransactions certificates (it has no
+                // signers feeding it signatures), so it side-synchronizes the leader's verified
+                // certificate instead. The leader path is unchanged (it reaches quorum and never
+                // enters this branch).
+                if self.config.is_follower
+                    && matches!(
+                        state.open_message.signed_entity_type,
+                        SignedEntityType::CardanoTransactions(..)
+                    )
+                    && let Err(error) =
+                        self.runner.sync_leader_cardano_transactions_certificate().await
+                {
+                    warn!(
+                        self.logger,
+                        "Follower failed to synchronize the leader's CardanoTransactions certificate";
+                        "error" => ?error
+                    );
+                }
+
+                return Err(RuntimeError::KeepState {
+                    message: "not enough signature yet to create a certificate, waiting…"
+                        .to_string(),
+                    nested_error: None,
+                });
+            }
+        };
         self.runner
             .create_artifact(&state.open_message.signed_entity_type, &certificate)
             .await
@@ -841,6 +866,8 @@ mod tests {
     mod follower {
         use mockall::predicate::eq;
 
+        use mithril_common::entities::{BlockNumber, Epoch};
+
         use super::*;
 
         #[tokio::test]
@@ -958,6 +985,90 @@ mod tests {
             runtime.cycle().await.unwrap();
 
             assert_eq!("ready".to_string(), runtime.get_state());
+        }
+
+        #[tokio::test]
+        async fn signing_without_signatures_synchronizes_leader_cardano_transactions_certificate() {
+            let mut runner = MockAggregatorRunner::new();
+            runner
+                .expect_get_time_point_from_chain()
+                .once()
+                .returning(|| Ok(TimePoint::dummy()));
+            runner
+                .expect_is_open_message_outdated()
+                .once()
+                .returning(|_, _| Ok(false));
+            runner.expect_create_certificate().once().returning(|_| Ok(None));
+            // Follower fallback: side-synchronize the leader's CardanoTransactions certificate.
+            runner
+                .expect_sync_leader_cardano_transactions_certificate()
+                .once()
+                .returning(|| Ok(()));
+            runner
+                .expect_increment_runtime_cycle_total_since_startup_counter()
+                .once()
+                .returning(|| ());
+            runner
+                .expect_increment_runtime_cycle_success_since_startup_counter()
+                .never();
+
+            let state = SigningState {
+                current_time_point: TimePoint::dummy(),
+                open_message: OpenMessage {
+                    signed_entity_type: SignedEntityType::CardanoTransactions(
+                        Epoch(1),
+                        BlockNumber(100),
+                    ),
+                    ..OpenMessage::dummy()
+                },
+            };
+            let mut runtime =
+                init_runtime(Some(AggregatorState::Signing(state)), runner, true).await;
+            let err = runtime
+                .cycle()
+                .await
+                .expect_err("cycle should keep state while waiting");
+
+            assert!(matches!(err, RuntimeError::KeepState { .. }));
+            assert_eq!("signing".to_string(), runtime.get_state());
+        }
+
+        #[tokio::test]
+        async fn signing_without_signatures_does_not_synchronize_for_non_cardano_transactions() {
+            let mut runner = MockAggregatorRunner::new();
+            runner
+                .expect_get_time_point_from_chain()
+                .once()
+                .returning(|| Ok(TimePoint::dummy()));
+            runner
+                .expect_is_open_message_outdated()
+                .once()
+                .returning(|_, _| Ok(false));
+            runner.expect_create_certificate().once().returning(|_| Ok(None));
+            // Not a CardanoTransactions open message: the follower must NOT synchronize
+            // (an unexpected call would make the mock panic).
+            runner.expect_sync_leader_cardano_transactions_certificate().never();
+            runner
+                .expect_increment_runtime_cycle_total_since_startup_counter()
+                .once()
+                .returning(|| ());
+            runner
+                .expect_increment_runtime_cycle_success_since_startup_counter()
+                .never();
+
+            let state = SigningState {
+                current_time_point: TimePoint::dummy(),
+                open_message: OpenMessage {
+                    signed_entity_type: SignedEntityType::MithrilStakeDistribution(Epoch(1)),
+                    ..OpenMessage::dummy()
+                },
+            };
+            let mut runtime =
+                init_runtime(Some(AggregatorState::Signing(state)), runner, true).await;
+            runtime
+                .cycle()
+                .await
+                .expect_err("cycle should keep state while waiting");
         }
     }
 }

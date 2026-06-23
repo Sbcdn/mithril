@@ -14,6 +14,15 @@ pub trait CertificateChainSynchronizer: Send + Sync {
     /// If `force` is true, the chain will always be synchronized, else it will only synchronize
     /// if the remote source has started a new chain with a new Genesis.
     async fn synchronize_certificate_chain(&self, force: bool) -> StdResult<()>;
+
+    /// Fetch, verify, and store the remote source's latest CardanoTransactions certificate.
+    ///
+    /// The certificate's multi-signature is verified and it is checked to link into the
+    /// genesis-anchored certificate chain (which [`synchronize_certificate_chain`] keeps in sync).
+    /// Returns the verified certificate, or `None` if the remote source has none. Used by follower
+    /// aggregators, which cannot produce CardanoTransactions certificates themselves (they have no
+    /// signers), so they synchronize the leader's instead.
+    async fn synchronize_cardano_transactions_certificate(&self) -> StdResult<Option<Certificate>>;
 }
 
 /// Define how to retrieve remote certificate details
@@ -22,6 +31,11 @@ pub trait CertificateChainSynchronizer: Send + Sync {
 pub trait RemoteCertificateRetriever: Sync + Send {
     /// Get latest certificate
     async fn get_latest_certificate_details(&self) -> StdResult<Option<Certificate>>;
+
+    /// Get the latest CardanoTransactions certificate
+    async fn get_latest_cardano_transactions_certificate_details(
+        &self,
+    ) -> StdResult<Option<Certificate>>;
 
     /// Get genesis certificate
     async fn get_genesis_certificate_details(&self) -> StdResult<Option<Certificate>>;
