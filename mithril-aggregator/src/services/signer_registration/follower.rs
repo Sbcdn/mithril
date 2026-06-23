@@ -68,7 +68,7 @@ impl MithrilSignerRegistrationFollower {
         for signer in signers {
             let signer_with_stake = self
                 .signer_registration_verifier
-                .verify(signer, stake_distribution)
+                .verify_synchronized(signer, stake_distribution)
                 .await
                 .map_err(|err| {
                     SignerRegistrationError::InvalidSignerRegistration(
@@ -353,7 +353,7 @@ mod tests {
             .with_signer_registration_verifier({
                 let mut signer_registration_verifier = MockSignerRegistrationVerifier::new();
                 signer_registration_verifier
-                    .expect_verify()
+                    .expect_verify_synchronized()
                     .returning(|signer, _| Ok(SignerWithStake::from_signer(signer.to_owned(), 123)))
                     .times(5);
 
@@ -415,7 +415,7 @@ mod tests {
             .with_signer_registration_verifier({
                 let mut signer_registration_verifier = MockSignerRegistrationVerifier::new();
                 signer_registration_verifier
-                    .expect_verify()
+                    .expect_verify_synchronized()
                     .returning(|signer, _| Ok(SignerWithStake::from_signer(signer.to_owned(), 123)))
                     .times(5);
 
@@ -482,7 +482,7 @@ mod tests {
             .with_signer_registration_verifier({
                 let mut signer_registration_verifier = MockSignerRegistrationVerifier::new();
                 signer_registration_verifier
-                    .expect_verify()
+                    .expect_verify_synchronized()
                     .returning(|signer, _| Ok(SignerWithStake::from_signer(signer.to_owned(), 123)))
                     .times(5);
 
