@@ -228,6 +228,42 @@ impl CertificateChainSynchronizer for MithrilCertificateChainSynchronizer {
         );
         Ok(())
     }
+
+    async fn synchronize_cardano_transactions_certificate(&self) -> StdResult<Option<Certificate>> {
+        let Some(certificate) = self
+            .remote_certificate_retriever
+            .get_latest_cardano_transactions_certificate_details()
+            .await?
+        else {
+            debug!(
+                self.logger,
+                "No remote CardanoTransactions certificate to synchronize"
+            );
+            return Ok(None);
+        };
+
+        // Verify the certificate's multi-signature and that it links to its parent, which belongs
+        // to the genesis-anchored chain kept in sync by `synchronize_certificate_chain`.
+        self.certificate_verifier
+            .verify_certificate(&certificate, &self.genesis_verifier.to_verification_key())
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to verify remote CardanoTransactions certificate: `{}`",
+                    certificate.hash
+                )
+            })?;
+
+        self.certificate_storer
+            .insert_or_replace_many(vec![certificate.clone()])
+            .await?;
+
+        debug!(
+            self.logger, "Synchronized remote CardanoTransactions certificate";
+            "certificate_hash" => &certificate.hash
+        );
+        Ok(Some(certificate))
+    }
 }
 
 fn prepare_open_message_to_store(latest_certificate: &Certificate) -> OpenMessage {
@@ -778,6 +814,68 @@ mod tests {
                 remote_chain.certificate_path_to_genesis(&remote_chain.latest_certificate().hash);
             expected.reverse();
             assert_eq!(expected, storer.stored_certificates());
+        }
+    }
+
+    mod synchronize_cardano_transactions_certificate {
+        use super::*;
+
+        #[tokio::test]
+        async fn fetches_verifies_and_stores_the_remote_certificate() {
+            let certificate = fake_data::certificate("ct-cert".to_string());
+            let synchronizer = MithrilCertificateChainSynchronizer {
+                remote_certificate_retriever:
+                    MockBuilder::<MockRemoteCertificateRetriever>::configure({
+                        let certificate = certificate.clone();
+                        move |retriever| {
+                            retriever
+                                .expect_get_latest_cardano_transactions_certificate_details()
+                                .return_once(move || Ok(Some(certificate)));
+                        }
+                    }),
+                certificate_verifier: MockBuilder::<MockCertificateVerifier>::configure(
+                    |verifier| {
+                        verifier
+                            .expect_verify_certificate()
+                            .once()
+                            .return_once(|_, _| Ok(None));
+                    },
+                ),
+                certificate_storer: MockBuilder::<MockSynchronizedCertificateStorer>::configure(
+                    |storer| {
+                        storer.expect_insert_or_replace_many().once().return_once(|_| Ok(()));
+                    },
+                ),
+                ..MithrilCertificateChainSynchronizer::default_for_test()
+            };
+
+            let synchronized = synchronizer
+                .synchronize_cardano_transactions_certificate()
+                .await
+                .unwrap();
+
+            assert_eq!(Some(certificate.hash), synchronized.map(|c| c.hash));
+        }
+
+        #[tokio::test]
+        async fn returns_none_when_remote_has_no_cardano_transactions_certificate() {
+            let synchronizer = MithrilCertificateChainSynchronizer {
+                remote_certificate_retriever:
+                    MockBuilder::<MockRemoteCertificateRetriever>::configure(|retriever| {
+                        retriever
+                            .expect_get_latest_cardano_transactions_certificate_details()
+                            .return_once(|| Ok(None));
+                    }),
+                ..MithrilCertificateChainSynchronizer::default_for_test()
+            };
+
+            assert!(
+                synchronizer
+                    .synchronize_cardano_transactions_certificate()
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 }

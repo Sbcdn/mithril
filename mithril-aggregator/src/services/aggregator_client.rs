@@ -4,7 +4,11 @@ use mithril_aggregator_client::{
     AggregatorHttpClient,
     query::{GetCertificateQuery, GetCertificatesListQuery, GetEpochSettingsQuery},
 };
-use mithril_common::{StdResult, entities::Certificate, messages::TryFromMessageAdapter};
+use mithril_common::{
+    StdResult,
+    entities::{Certificate, SignedEntityType},
+    messages::TryFromMessageAdapter,
+};
 
 use crate::entities::LeaderAggregatorEpochSettings;
 use crate::message_adapters::FromEpochSettingsAdapter;
@@ -32,6 +36,27 @@ impl RemoteCertificateRetriever for AggregatorHttpClient {
                     ))
                     .await?;
                 latest_certificate_message.map(TryInto::try_into).transpose()
+            }
+        }
+    }
+
+    async fn get_latest_cardano_transactions_certificate_details(
+        &self,
+    ) -> StdResult<Option<Certificate>> {
+        let latest_certificates_list = self.send(GetCertificatesListQuery::latest()).await?;
+
+        match latest_certificates_list.iter().find(|item| {
+            matches!(
+                item.signed_entity_type,
+                SignedEntityType::CardanoTransactions(..)
+            )
+        }) {
+            None => Ok(None),
+            Some(certificate_list_item) => {
+                let certificate_message = self
+                    .send(GetCertificateQuery::by_hash(&certificate_list_item.hash))
+                    .await?;
+                certificate_message.map(TryInto::try_into).transpose()
             }
         }
     }
