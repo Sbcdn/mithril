@@ -5,7 +5,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use mithril_common::StdResult;
-use mithril_common::entities::{Certificate, Epoch, ProtocolMessage, SignedEntityType, TimePoint};
+use mithril_common::entities::{
+    BlockNumber, Certificate, Epoch, ProtocolMessage, ProtocolMessagePartKey, SignedEntityType,
+    TimePoint,
+};
 use mithril_common::logging::LoggerExtensions;
 use mithril_persistence::store::StakeStorer;
 
@@ -77,6 +80,13 @@ pub trait AggregatorRunnerTrait: Sync + Send {
         &self,
         force_sync: bool,
     ) -> StdResult<()>;
+
+    /// Synchronize the leader's latest CardanoTransactions certificate (follower only).
+    ///
+    /// A follower aggregator cannot produce CardanoTransactions certificates (it has no signers),
+    /// so it fetches, verifies, and stores the leader's, then builds the corresponding artifact,
+    /// signed-entity, and prover cache from the verified certificate.
+    async fn sync_leader_cardano_transactions_certificate(&self) -> StdResult<()>;
 
     /// Compute the protocol message
     async fn compute_protocol_message(
@@ -512,6 +522,59 @@ impl AggregatorRunnerTrait for AggregatorRunner {
             .certificate_chain_synchronizer
             .synchronize_certificate_chain(force_sync)
             .await
+    }
+
+    async fn sync_leader_cardano_transactions_certificate(&self) -> StdResult<()> {
+        debug!(
+            self.logger,
+            ">> sync_leader_cardano_transactions_certificate"
+        );
+
+        let Some(certificate) = self
+            .dependencies
+            .certificate_chain_synchronizer
+            .synchronize_cardano_transactions_certificate()
+            .await?
+        else {
+            return Ok(());
+        };
+
+        let block_number = BlockNumber(
+            certificate
+                .protocol_message
+                .get_message_part(&ProtocolMessagePartKey::LatestBlockNumber)
+                .with_context(|| {
+                    format!(
+                        "Synced CardanoTransactions certificate '{}' has no latest_block_number",
+                        certificate.hash
+                    )
+                })?
+                .parse::<u64>()
+                .with_context(|| "Could not parse latest_block_number of synced certificate")?,
+        );
+        let signed_entity_type =
+            SignedEntityType::CardanoTransactions(certificate.epoch, block_number);
+
+        // Skip rebuilding the artifact/prover cache when we already hold a snapshot at or beyond
+        // this tip (avoids recomputing the same cache every cycle).
+        if let Some(latest) = self
+            .dependencies
+            .signed_entity_service
+            .get_last_cardano_transaction_snapshot()
+            .await?
+            && latest.artifact.block_number >= block_number
+        {
+            debug!(
+                self.logger, "CardanoTransactions snapshot already up to date";
+                "block_number" => *block_number
+            );
+            return Ok(());
+        }
+
+        // Reuse the standard artifact-creation path with the verified, synchronized certificate:
+        // it builds the CardanoTransactionsSnapshot, computes the prover cache, and stores the
+        // signed-entity.
+        self.create_artifact(&signed_entity_type, &certificate).await
     }
 }
 
