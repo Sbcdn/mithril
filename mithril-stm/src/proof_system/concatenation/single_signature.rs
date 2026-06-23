@@ -13,7 +13,7 @@ use super::is_lottery_won;
 
 /// Single signature for the concatenation proof system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SingleSignatureForConcatenation {
+pub struct SingleSignatureForConcatenation {
     /// The underlying BLS signature
     sigma: BlsSignature,
     /// The index(es) for which the signature is valid
@@ -22,9 +22,19 @@ pub(crate) struct SingleSignatureForConcatenation {
 
 impl SingleSignatureForConcatenation {
     /// Create and return a new instance of `SingleSignatureForConcatenation` for given `sigma` and
-    /// `indexes`.
-    pub(crate) fn new(sigma: BlsSignature, indexes: Vec<LotteryIndex>) -> Self {
+    /// `indexes`. Exposed for custom serializer / deserializer consumers (e.g. risc0).
+    pub fn new(sigma: BlsSignature, indexes: Vec<LotteryIndex>) -> Self {
         Self { sigma, indexes }
+    }
+
+    /// Borrow the underlying BLS signature. Exposed for custom serializer consumers.
+    pub fn sigma(&self) -> &BlsSignature {
+        &self.sigma
+    }
+
+    /// Borrow the lottery indices the signature is valid for. Exposed for custom serializer consumers.
+    pub fn indexes(&self) -> &[LotteryIndex] {
+        &self.indexes
     }
 
     /// Verify a `SingleSignatureForConcatenation` by validating the underlying BLS signature and checking

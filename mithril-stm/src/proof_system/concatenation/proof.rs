@@ -38,6 +38,23 @@ pub struct ConcatenationProof<D: MembershipDigest> {
 }
 
 impl<D: MembershipDigest> ConcatenationProof<D> {
+    /// Construct a `ConcatenationProof` from already-aggregated components.
+    /// Exposed for custom serializer / deserializer consumers (e.g. risc0).
+    pub fn new(
+        signatures: Vec<SingleSignatureWithRegisteredParty>,
+        batch_proof: MerkleBatchPath<D::ConcatenationHash>,
+    ) -> Self {
+        Self {
+            signatures,
+            batch_proof,
+        }
+    }
+
+    /// Borrow the underlying signatures. Exposed for custom serializer consumers.
+    pub fn signatures(&self) -> &[SingleSignatureWithRegisteredParty] {
+        &self.signatures
+    }
+
     /// Aggregate a set of signatures for their corresponding indices.
     ///
     /// This function first deduplicates the repeated signatures, and if there are enough signatures, it collects the merkle tree indexes of unique signatures.
