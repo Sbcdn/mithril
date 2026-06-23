@@ -118,13 +118,20 @@ pub struct MerkleTreeBatchCommitment<D: Digest, L: MerkleTreeLeaf> {
 }
 
 impl<D: Digest + FixedOutput, L: MerkleTreeLeaf> MerkleTreeBatchCommitment<D, L> {
-    pub(crate) fn new(root: Vec<u8>, nr_leaves: usize) -> Self {
+    // Made public for AVK reconstruction from byte form in custom serializer
+    // consumers (e.g. risc0).
+    pub fn new(root: Vec<u8>, nr_leaves: usize) -> Self {
         Self {
             root,
             nr_leaves,
             hasher: Default::default(),
             leaf_type: PhantomData,
         }
+    }
+
+    /// Number of leaves in the committed Merkle tree.
+    pub fn nr_leaves(&self) -> usize {
+        self.nr_leaves
     }
 
     #[cfg(feature = "future_snark")]
