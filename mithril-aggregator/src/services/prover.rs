@@ -246,7 +246,7 @@ impl<S: MKTreeStorer> ProverService for MithrilProverService<S> {
     }
 }
 
-fn compute_ranges_of_block_number_to_retrieve<T>(
+pub(crate) fn compute_ranges_of_block_number_to_retrieve<T>(
     items_with_block_number: &[T],
     extract_block_number: fn(&T) -> BlockNumber,
     up_to: RangeToInclusive<BlockNumber>,
