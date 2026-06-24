@@ -9,6 +9,8 @@
 //!
 //! Each service is defined by a public API (a trait) that is used in the controllers (runtimes).
 
+#[cfg(feature = "prover-accumulator")]
+mod accumulator;
 mod aggregator_client;
 mod certificate_chain_synchronizer;
 mod certifier;
@@ -28,12 +30,16 @@ mod stake_distribution;
 mod upkeep;
 mod usage_reporter;
 
+#[cfg(feature = "prover-accumulator")]
+pub use accumulator::*;
 pub use certificate_chain_synchronizer::*;
 pub use certifier::*;
 pub use chain_data_importer::*;
 pub use epoch_service::*;
 pub use message::*;
 pub use network_configuration_provider::*;
+#[cfg(feature = "prover-accumulator")]
+pub(crate) use prover::compute_ranges_of_block_number_to_retrieve;
 pub use prover::*;
 pub use prover_legacy::*;
 pub use signable_builder::*;

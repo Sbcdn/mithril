@@ -15,12 +15,17 @@ rustls = ["reqwest/rustls"]
 
 future_snark = ["mithril-common/future_snark", "dep:ciborium"]
 
+# Enables the redb-backed MMR accumulator prover (off-RAM, persistent historical
+# transaction-proof serving). Opt-in: pulls in the `redb` dependency.
+prover-accumulator = ["dep:redb"]
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 blockfrost = { version = "1.2.4", default-features = false, features = ["rustls"] }
 chrono = { workspace = true }
 ciborium = { version = "0.2.2", optional = true }
+redb = { version = "2.2", optional = true }
 clap = { workspace = true, features = ["cargo"] }
 config = { workspace = true }
 flate2 = "1.1.9"
