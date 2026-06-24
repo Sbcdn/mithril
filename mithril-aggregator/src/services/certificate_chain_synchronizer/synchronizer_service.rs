@@ -248,7 +248,10 @@ impl CertificateChainSynchronizer for MithrilCertificateChainSynchronizer {
         // Verify the certificate's multi-signature and that it links to its parent, which belongs
         // to the genesis-anchored chain kept in sync by `synchronize_certificate_chain`.
         self.certificate_verifier
-            .verify_certificate(&certificate, &self.genesis_verifier.to_ed25519_verification_key())
+            .verify_certificate(
+                &certificate,
+                &self.genesis_verifier.to_ed25519_verification_key(),
+            )
             .await
             .with_context(|| {
                 format!(
