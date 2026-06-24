@@ -7,7 +7,7 @@ use mithril_aggregator_client::{
 use mithril_common::{
     StdResult,
     entities::{Certificate, SignedEntityType},
-    messages::TryFromMessageAdapter,
+    messages::{SignedEntityTypeMessage, TryFromMessageAdapter},
 };
 
 use crate::entities::LeaderAggregatorEpochSettings;
@@ -48,7 +48,7 @@ impl RemoteCertificateRetriever for AggregatorHttpClient {
         match latest_certificates_list.iter().find(|item| {
             matches!(
                 item.signed_entity_type,
-                SignedEntityType::CardanoTransactions(..)
+                SignedEntityTypeMessage::Known(SignedEntityType::CardanoTransactions(..))
             )
         }) {
             None => Ok(None),
