@@ -239,6 +239,12 @@ pub trait ConfigurationSource {
         panic!("allow_unparsable_block is not implemented.");
     }
 
+    /// Whether the Cardano transactions prover serves proofs from the MMR accumulator
+    /// (requires the `prover-accumulator` build feature)
+    fn cardano_transactions_prover_use_accumulator(&self) -> bool {
+        panic!("cardano_transactions_prover_use_accumulator is not implemented.");
+    }
+
     /// Cardano blocks and transactions prover cache pool size
     fn cardano_blocks_transactions_prover_cache_pool_size(&self) -> usize {
         panic!("cardano_blocks_transactions_prover_cache_pool_size is not implemented.");
@@ -621,6 +627,10 @@ pub struct ServeCommandConfiguration {
     /// Will be ignored on (pre)production networks.
     pub allow_unparsable_block: bool,
 
+    /// Whether the Cardano transactions prover serves proofs from the MMR accumulator
+    /// (requires the `prover-accumulator` build feature)
+    pub cardano_transactions_prover_use_accumulator: bool,
+
     /// Cardano blocks and transactions prover cache pool size
     pub cardano_blocks_transactions_prover_cache_pool_size: usize,
 
@@ -827,6 +837,7 @@ impl ServeCommandConfiguration {
             blockfrost_parameters: None,
             signer_importer_run_interval: 1,
             allow_unparsable_block: false,
+            cardano_transactions_prover_use_accumulator: false,
             cardano_blocks_transactions_prover_cache_pool_size: 3,
             cardano_blocks_transactions_database_connection_pool_size: 5,
             cardano_transactions_prover_cache_pool_size: 3,
@@ -998,6 +1009,10 @@ impl ConfigurationSource for ServeCommandConfiguration {
         self.allow_unparsable_block
     }
 
+    fn cardano_transactions_prover_use_accumulator(&self) -> bool {
+        self.cardano_transactions_prover_use_accumulator
+    }
+
     fn cardano_blocks_transactions_prover_cache_pool_size(&self) -> usize {
         self.cardano_blocks_transactions_prover_cache_pool_size
     }
@@ -1127,6 +1142,9 @@ pub struct DefaultConfiguration {
     /// Will be ignored on (pre)production networks.
     pub allow_unparsable_block: String,
 
+    /// Whether the Cardano transactions prover serves proofs from the MMR accumulator
+    pub cardano_transactions_prover_use_accumulator: String,
+
     /// Cardano blocks and transactions prover cache pool size
     pub cardano_blocks_transactions_prover_cache_pool_size: u32,
 
@@ -1195,6 +1213,7 @@ impl Default for DefaultConfiguration {
             snapshot_use_cdn_domain: "false".to_string(),
             signer_importer_run_interval: 720,
             allow_unparsable_block: "false".to_string(),
+            cardano_transactions_prover_use_accumulator: "false".to_string(),
             cardano_blocks_transactions_prover_cache_pool_size: 10,
             cardano_blocks_transactions_database_connection_pool_size: 10,
             cardano_transactions_prover_cache_pool_size: 10,
@@ -1260,6 +1279,11 @@ impl Source for DefaultConfiguration {
         register_config_value!(result, &namespace, myself.snapshot_use_cdn_domain);
         register_config_value!(result, &namespace, myself.signer_importer_run_interval);
         register_config_value!(result, &namespace, myself.allow_unparsable_block);
+        register_config_value!(
+            result,
+            &namespace,
+            myself.cardano_transactions_prover_use_accumulator
+        );
         register_config_value!(
             result,
             &namespace,

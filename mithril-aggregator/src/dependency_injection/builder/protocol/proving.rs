@@ -10,6 +10,11 @@ use crate::services::{
 impl DependenciesBuilder {
     /// Build Prover service
     pub async fn build_prover_service(&mut self) -> Result<Arc<dyn ProverService>> {
+        #[cfg(feature = "prover-accumulator")]
+        if self.configuration.cardano_transactions_prover_use_accumulator() {
+            return self.build_accumulator_blocks_prover_service().await;
+        }
+
         let mk_map_pool_size = self
             .configuration
             .cardano_blocks_transactions_prover_cache_pool_size();
@@ -33,6 +38,11 @@ impl DependenciesBuilder {
 
     /// Build Legacy Prover service
     pub async fn build_legacy_prover_service(&mut self) -> Result<Arc<dyn LegacyProverService>> {
+        #[cfg(feature = "prover-accumulator")]
+        if self.configuration.cardano_transactions_prover_use_accumulator() {
+            return self.build_accumulator_prover_service().await;
+        }
+
         let mk_map_pool_size = self.configuration.cardano_transactions_prover_cache_pool_size();
         let transaction_retriever = self.get_chain_data_repository().await?;
         let block_range_root_retriever = self.get_chain_data_repository().await?;
@@ -50,5 +60,94 @@ impl DependenciesBuilder {
     /// [LegacyProverService] service
     pub async fn get_legacy_prover_service(&mut self) -> Result<Arc<dyn LegacyProverService>> {
         get_dependency!(self.legacy_prover_service)
+    }
+
+    /// Build the MMR-accumulator-backed Legacy Prover service and warm it from the sealed
+    /// block-range-roots.
+    #[cfg(feature = "prover-accumulator")]
+    async fn build_accumulator_prover_service(&mut self) -> Result<Arc<dyn LegacyProverService>> {
+        use mithril_common::{
+            crypto_helper::MKTreeStorer, entities::BlockNumber,
+            signable_builder::LegacyBlockRangeRootRetriever,
+        };
+
+        use crate::services::{AccumulatorProverService, BlockRangeAccumulator, MKTreeStoreRedb};
+
+        let transaction_retriever = self.get_chain_data_repository().await?;
+        let block_range_root_retriever: Arc<dyn LegacyBlockRangeRootRetriever<MKTreeStoreRedb>> =
+            self.get_chain_data_repository().await?;
+        let logger = self.root_logger();
+
+        let store =
+            if self.configuration.data_stores_directory() == std::path::Path::new(":memory:") {
+                // In-memory store for test/ephemeral configurations.
+                MKTreeStoreRedb::build()?
+            } else {
+                let store_path = self
+                    .configuration
+                    .data_stores_directory()
+                    .join("mktree-accumulator-v1.redb");
+                MKTreeStoreRedb::open(&store_path)?
+            };
+
+        let accumulator = Arc::new(BlockRangeAccumulator::new(store, logger)?);
+
+        // Warm the accumulator from the sealed block-range-roots at startup. The bound is
+        // `i64::MAX`: the persistence query casts it to `i64`, so `u64::MAX` would wrap to `-1`.
+        let block_range_roots = block_range_root_retriever
+            .retrieve_block_range_roots(BlockNumber(i64::MAX as u64))
+            .await?
+            .collect::<Vec<_>>();
+        accumulator.synchronize_with(block_range_roots).await?;
+
+        Ok(Arc::new(AccumulatorProverService::new(
+            transaction_retriever,
+            block_range_root_retriever,
+            accumulator,
+        )))
+    }
+
+    /// Build the MMR-accumulator-backed v2 ([`ProverService`]) and warm it from the sealed
+    /// CardanoBlocksTransactions block-range-roots.
+    #[cfg(feature = "prover-accumulator")]
+    async fn build_accumulator_blocks_prover_service(&mut self) -> Result<Arc<dyn ProverService>> {
+        use mithril_common::{
+            crypto_helper::MKTreeStorer, entities::BlockNumber,
+            signable_builder::BlockRangeRootRetriever,
+        };
+
+        use crate::services::{
+            AccumulatorBlocksProverService, BlockRangeAccumulator, MKTreeStoreRedb,
+        };
+
+        let blocks_transactions_retriever = self.get_chain_data_repository().await?;
+        let block_range_root_retriever: Arc<dyn BlockRangeRootRetriever<MKTreeStoreRedb>> =
+            self.get_chain_data_repository().await?;
+        let logger = self.root_logger();
+
+        let store =
+            if self.configuration.data_stores_directory() == std::path::Path::new(":memory:") {
+                MKTreeStoreRedb::build()?
+            } else {
+                let store_path = self
+                    .configuration
+                    .data_stores_directory()
+                    .join("mktree-accumulator-v2.redb");
+                MKTreeStoreRedb::open(&store_path)?
+            };
+
+        let accumulator = Arc::new(BlockRangeAccumulator::new(store, logger)?);
+
+        let block_range_roots = block_range_root_retriever
+            .retrieve_block_range_roots(BlockNumber(i64::MAX as u64))
+            .await?
+            .collect::<Vec<_>>();
+        accumulator.synchronize_with(block_range_roots).await?;
+
+        Ok(Arc::new(AccumulatorBlocksProverService::new(
+            blocks_transactions_retriever,
+            block_range_root_retriever,
+            accumulator,
+        )))
     }
 }
