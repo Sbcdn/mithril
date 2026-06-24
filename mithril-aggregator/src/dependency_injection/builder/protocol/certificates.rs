@@ -182,13 +182,27 @@ impl DependenciesBuilder {
     async fn build_mithril_signer_registration_follower(
         &mut self,
     ) -> Result<Arc<MithrilSignerRegistrationFollower>> {
+        let leader_aggregator_client = self.get_leader_aggregator_client().await?;
+        // A cold follower fetches and verifies the trustless bootstrap stake-distribution
+        // certificate against the leader's chain (walking parent certificates by hash from the
+        // leader up to genesis), not the still-empty local certificate store — so both its
+        // certificate retriever and the retriever backing its verifier are the leader aggregator
+        // client, like the certificate-chain synchronizer.
+        let leader_certificate_verifier = Arc::new(MithrilCertificateVerifier::new(
+            self.root_logger(),
+            leader_aggregator_client.clone(),
+        ));
         let registerer = MithrilSignerRegistrationFollower::new(
             self.get_epoch_service().await?,
             self.get_verification_key_store().await?,
             self.get_signer_store().await?,
             self.get_signer_registration_verifier().await?,
-            self.get_leader_aggregator_client().await?,
+            leader_aggregator_client.clone(),
             self.get_stake_store().await?,
+            leader_aggregator_client,
+            leader_certificate_verifier,
+            self.get_genesis_verifier().await?,
+            self.root_logger(),
         );
 
         Ok(Arc::new(registerer))

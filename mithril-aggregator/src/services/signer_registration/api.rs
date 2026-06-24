@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use mithril_common::{
     StdResult,
     entities::{Epoch, Signer, SignerWithStake, StakeDistribution},
+    messages::MithrilStakeDistributionMessage,
 };
 
 use crate::entities::LeaderAggregatorEpochSettings;
@@ -113,4 +114,14 @@ pub trait SignerRegistrationVerifier: Send + Sync {
 pub trait LeaderAggregatorClient: Sync + Send {
     /// Retrieves epoch settings from the aggregator
     async fn retrieve_epoch_settings(&self) -> StdResult<Option<LeaderAggregatorEpochSettings>>;
+
+    /// Retrieves the signed Mithril stake distribution for the given `epoch` from the aggregator.
+    ///
+    /// This is the trusted source for bootstrapping a fresh follower's per-epoch signers: the
+    /// returned artifact carries the `signers_with_stake` whose aggregate verification key is
+    /// signed by the associated certificate (verifiable against the genesis-anchored chain).
+    async fn retrieve_mithril_stake_distribution(
+        &self,
+        epoch: Epoch,
+    ) -> StdResult<Option<MithrilStakeDistributionMessage>>;
 }

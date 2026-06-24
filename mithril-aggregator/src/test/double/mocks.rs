@@ -9,7 +9,7 @@ use mithril_cardano_node_chain::{
 };
 use mithril_common::{
     StdResult,
-    certificate_chain::CertificateVerifier,
+    certificate_chain::{CertificateRetriever, CertificateRetrieverError, CertificateVerifier},
     crypto_helper::{
         GenesisEd25519VerificationKey, KesPeriod, MKMap, MKMapNode, MKTreeNode, MKTreeStorer,
     },
@@ -20,6 +20,18 @@ use mithril_common::{
     signable_builder::BlockRangeRootRetriever,
 };
 use mithril_persistence::store::StakeStorer;
+
+mock! {
+    pub CertificateRetriever {}
+
+    #[async_trait]
+    impl CertificateRetriever for CertificateRetriever {
+        async fn get_certificate_details(
+            &self,
+            certificate_hash: &str,
+        ) -> Result<Certificate, CertificateRetrieverError>;
+    }
+}
 
 mock! {
     pub CertificateVerifier {}

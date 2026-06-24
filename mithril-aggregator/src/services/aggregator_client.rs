@@ -2,12 +2,15 @@ use async_trait::async_trait;
 
 use mithril_aggregator_client::{
     AggregatorHttpClient,
-    query::{GetCertificateQuery, GetCertificatesListQuery, GetEpochSettingsQuery},
+    query::{
+        GetCertificateQuery, GetCertificatesListQuery, GetEpochSettingsQuery,
+        GetMithrilStakeDistributionQuery, GetMithrilStakeDistributionsListQuery,
+    },
 };
 use mithril_common::{
     StdResult,
-    entities::{Certificate, SignedEntityType},
-    messages::{SignedEntityTypeMessage, TryFromMessageAdapter},
+    entities::{Certificate, Epoch, SignedEntityType},
+    messages::{MithrilStakeDistributionMessage, SignedEntityTypeMessage, TryFromMessageAdapter},
 };
 
 use crate::entities::LeaderAggregatorEpochSettings;
@@ -19,6 +22,21 @@ impl LeaderAggregatorClient for AggregatorHttpClient {
     async fn retrieve_epoch_settings(&self) -> StdResult<Option<LeaderAggregatorEpochSettings>> {
         let epoch_settings = self.send(GetEpochSettingsQuery::current()).await?;
         FromEpochSettingsAdapter::try_adapt(epoch_settings).map(Some)
+    }
+
+    async fn retrieve_mithril_stake_distribution(
+        &self,
+        epoch: Epoch,
+    ) -> StdResult<Option<MithrilStakeDistributionMessage>> {
+        let stake_distributions_list =
+            self.send(GetMithrilStakeDistributionsListQuery::latest()).await?;
+
+        match stake_distributions_list.iter().find(|item| item.epoch == epoch) {
+            None => Ok(None),
+            Some(item) => Ok(self
+                .send(GetMithrilStakeDistributionQuery::by_hash(&item.hash))
+                .await?),
+        }
     }
 }
 
