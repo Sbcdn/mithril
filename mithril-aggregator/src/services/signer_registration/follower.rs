@@ -137,17 +137,61 @@ impl SignerSynchronizer for MithrilSignerRegistrationFollower {
             .map_err(SignerRegistrationError::FailedFetchingLeaderAggregatorEpochSettings)?;
         let registration_epoch =
             leader_epoch_settings.epoch.offset_to_leader_synchronization_epoch();
-        let next_signers = leader_epoch_settings.next_signers;
-        let stake_distribution = self
+        let signer_retrieval_epoch = registration_epoch
+            .offset_to_signer_retrieval_epoch()
+            .with_context(|| "synchronize_all_signers failed")
+            .map_err(SignerRegistrationError::Store)?;
+
+        // The stake distribution for the synchronized epochs. A long-running follower already has
+        // it from a previous `update_stake_distribution` cycle; a freshly started follower has
+        // only just recorded the current node snapshot at its recording epoch, so fall back to
+        // that so it can bootstrap from a cold start instead of deadlocking.
+        let stake_distribution = match self
             .stake_store
             .get_stakes(registration_epoch)
             .await
             .with_context(|| "synchronize_all_signers failed")
             .map_err(SignerRegistrationError::Store)?
-            .with_context(|| "Follower aggregator did not return any stake distribution")
-            .map_err(SignerRegistrationError::Store)?;
-        self.synchronize_signers(registration_epoch, &next_signers, &stake_distribution)
+        {
+            Some(stake_distribution) => stake_distribution,
+            None => self
+                .stake_store
+                .get_stakes(registration_epoch.offset_to_recording_epoch())
+                .await
+                .with_context(|| "synchronize_all_signers failed")
+                .map_err(SignerRegistrationError::Store)?
+                .with_context(|| "Follower aggregator did not return any stake distribution")
+                .map_err(SignerRegistrationError::Store)?,
+        };
+
+        // Per-cycle behaviour: register the leader's next signers at the registration epoch.
+        self.synchronize_signers(
+            registration_epoch,
+            &leader_epoch_settings.next_signers,
+            &stake_distribution,
+        )
+        .await?;
+
+        // Fresh-follower bootstrap: `precompute_epoch_data` also reads the signers of the
+        // signer-retrieval epoch, which a long-running follower filled in a previous cycle but a
+        // cold-started one has not — leaving it stuck before the certificate-chain sync can seed
+        // anything. When that epoch is still empty, seed it from the leader's current signers so
+        // the IDLE→READY transition can proceed.
+        let retrieval_epoch_is_empty = self
+            .verification_key_store
+            .get_signers(signer_retrieval_epoch)
+            .await
+            .with_context(|| "synchronize_all_signers failed")
+            .map_err(SignerRegistrationError::Store)?
+            .is_none_or(|signers| signers.is_empty());
+        if retrieval_epoch_is_empty {
+            self.synchronize_signers(
+                signer_retrieval_epoch,
+                &leader_epoch_settings.current_signers,
+                &stake_distribution,
+            )
             .await?;
+        }
 
         Ok(())
     }
@@ -336,17 +380,20 @@ mod tests {
         let stake_distribution = fixture.stake_distribution();
         let epoch_settings_message = FromEpochSettingsAdapter::try_adapt(EpochSettingsMessage {
             epoch: registration_epoch,
+            current_signers: SignerMessagePart::from_signers(signers.clone()),
             next_signers: SignerMessagePart::from_signers(signers),
             ..EpochSettingsMessage::dummy()
         })
         .unwrap();
+        // A fresh follower seeds both the registration epoch (next signers) and the
+        // signer-retrieval epoch (current signers), so each signer is processed twice.
         let signer_registration_follower = MithrilSignerRegistrationFollowerBuilder::default()
             .with_signer_recorder({
                 let mut signer_recorder = MockSignerRecorder::new();
                 signer_recorder
                     .expect_record_signer_registration()
                     .returning(|_| Ok(()))
-                    .times(5);
+                    .times(10);
 
                 Arc::new(signer_recorder)
             })
@@ -355,7 +402,7 @@ mod tests {
                 signer_registration_verifier
                     .expect_verify_synchronized()
                     .returning(|signer, _| Ok(SignerWithStake::from_signer(signer.to_owned(), 123)))
-                    .times(5);
+                    .times(10);
 
                 Arc::new(signer_registration_verifier)
             })
@@ -393,6 +440,7 @@ mod tests {
         let stake_distribution = fixture.stake_distribution();
         let epoch_settings_message = FromEpochSettingsAdapter::try_adapt(EpochSettingsMessage {
             epoch: registration_epoch,
+            current_signers: SignerMessagePart::from_signers(signers.clone()),
             next_signers: SignerMessagePart::from_signers(signers),
             ..EpochSettingsMessage::dummy()
         })
@@ -458,6 +506,7 @@ mod tests {
         let stake_distribution = fixture.stake_distribution();
         let epoch_settings_message = FromEpochSettingsAdapter::try_adapt(EpochSettingsMessage {
             epoch: registration_epoch,
+            current_signers: SignerMessagePart::from_signers(signers.clone()),
             next_signers: SignerMessagePart::from_signers(signers),
             ..EpochSettingsMessage::dummy()
         })
@@ -544,6 +593,7 @@ mod tests {
         let signers = fixture.signers();
         let epoch_settings_message = FromEpochSettingsAdapter::try_adapt(EpochSettingsMessage {
             epoch: registration_epoch,
+            current_signers: SignerMessagePart::from_signers(signers.clone()),
             next_signers: SignerMessagePart::from_signers(signers),
             ..EpochSettingsMessage::dummy()
         })
