@@ -2,7 +2,7 @@ use anyhow::{Context, anyhow};
 use blake2::{Blake2s256, Digest};
 use ckb_merkle_mountain_range::{
     Error as MMRError, MMR, MMRStoreReadOps, MMRStoreWriteOps, Merge, MerkleProof,
-    Result as MMRResult,
+    Result as MMRResult, leaf_index_to_mmr_size, leaf_index_to_pos,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -287,6 +287,13 @@ impl<S: MKTreeStorer> MKTreeStore<S> {
         let storer = Box::new(S::build()?);
         Ok(Self { storer })
     }
+
+    /// Mount a store over an already-existing storer instance, without creating a new one.
+    fn build_from(storer: S) -> Self {
+        Self {
+            storer: Box::new(storer),
+        }
+    }
 }
 
 impl<S: MKTreeStorer> MMRStoreReadOps<Arc<MKTreeNode>> for MKTreeStore<S> {
@@ -434,6 +441,87 @@ impl<S: MKTreeStorer> MKTree<S> {
             inner_proof_items: proof.proof_items().to_vec(),
         })
     }
+
+    /// Mount a Merkle tree over an existing storer at a known MMR size.
+    ///
+    /// Unlike [`new_from_iter`][Self::new_from_iter], this does **not** rebuild the tree by
+    /// pushing leaves: it wraps a storer that already holds the tree's nodes (for instance a
+    /// persistent store reloaded on startup) at `mmr_size`. Use `0` for an empty store and then
+    /// [`append`][Self::append]. Combined with [`generate_proof_at_size`][Self::generate_proof_at_size],
+    /// this lets a single append-only tree serve proofs against any of its past sizes.
+    pub fn from_storer_at_size(storer: S, mmr_size: u64) -> StdResult<Self> {
+        let inner_tree = MMR::<_, _, _>::new(mmr_size, MKTreeStore::<S>::build_from(storer));
+
+        Ok(Self { inner_tree })
+    }
+
+    /// Compute the root the tree had when it contained exactly `leaf_count` leaves.
+    ///
+    /// The tree is an append-only Merkle Mountain Range, so an earlier root is reproduced by
+    /// bagging the peaks of the historical size; no rebuild and no extra storage are required.
+    pub fn compute_root_at_size(&self, leaf_count: u64) -> StdResult<MKTreeNode> {
+        if leaf_count == 0 {
+            return Err(anyhow!(
+                "Could not compute Merkle Tree root for an empty size"
+            ));
+        }
+        let view = self.view_at_size(leaf_count);
+
+        Ok((*view
+            .get_root()
+            .with_context(|| format!("Could not compute Merkle Tree root at size {leaf_count}"))?)
+        .clone())
+    }
+
+    /// Generate a membership proof against a past size of this append-only tree.
+    ///
+    /// `leaf_count` is the number of leaves the tree had at the target size, and `leaves` are the
+    /// `(leaf_index, leaf_value)` pairs to prove, where `leaf_index` is the 0-based ordinal of the
+    /// leaf (each must be `< leaf_count`). The resulting [`MKProof`] verifies against
+    /// [`compute_root_at_size(leaf_count)`][Self::compute_root_at_size] and is identical to the
+    /// proof the tree would have produced when it held exactly `leaf_count` leaves.
+    ///
+    /// The caller owns the leaf-index bookkeeping, which avoids relying on the in-store
+    /// leaf-position index that a reloaded persistent store may not carry.
+    pub fn generate_proof_at_size(
+        &self,
+        leaf_count: u64,
+        leaves: &[(u64, MKTreeNode)],
+    ) -> StdResult<MKProof> {
+        if leaf_count == 0 {
+            return Err(anyhow!("Could not compute Merkle proof for an empty size"));
+        }
+        let inner_leaves = leaves
+            .iter()
+            .map(|(leaf_index, leaf)| (leaf_index_to_pos(*leaf_index), Arc::new(leaf.to_owned())))
+            .collect::<Vec<_>>();
+        let view = self.view_at_size(leaf_count);
+        let proof = view.gen_proof(inner_leaves.iter().map(|(pos, _)| *pos).collect())?;
+        let inner_root = view
+            .get_root()
+            .with_context(|| format!("Could not compute Merkle Tree root at size {leaf_count}"))?;
+
+        Ok(MKProof {
+            inner_root,
+            inner_leaves,
+            inner_proof_size: proof.mmr_size(),
+            inner_proof_items: proof.proof_items().to_vec(),
+        })
+    }
+
+    /// Open a read-only MMR view of this tree at the size it had with `leaf_count` leaves.
+    ///
+    /// The view shares the same storer (internal nodes are immutable once written), so reading
+    /// an earlier size never depends on nodes appended afterwards.
+    fn view_at_size(
+        &self,
+        leaf_count: u64,
+    ) -> MMR<Arc<MKTreeNode>, MergeMKTreeNode, MKTreeStore<S>> {
+        let mmr_size = leaf_index_to_mmr_size(leaf_count - 1);
+        let storer = self.inner_tree.store().storer.as_ref().clone();
+
+        MMR::new(mmr_size, MKTreeStore::build_from(storer))
+    }
 }
 
 impl<S: MKTreeStorer> Clone for MKTree<S> {
@@ -451,6 +539,77 @@ mod tests {
 
     fn generate_leaves(total_leaves: usize) -> Vec<MKTreeNode> {
         (0..total_leaves).map(|i| format!("test-{i}").into()).collect()
+    }
+
+    #[test]
+    fn generate_proof_at_size_reproduces_a_past_proof_byte_for_byte() {
+        // For an append-only tree grown to `total` leaves, proving leaves against a past size
+        // `n` must produce the exact same proof bytes and root as a tree built with only the
+        // first `n` leaves. Covers single-leaf, multi-peak, single-peak and current-size cases.
+        let cases: &[(usize, u64, &[u64])] = &[
+            (9, 5, &[0, 2, 4]), // n=5 (0b101) -> 2 peaks, grown by 4
+            (9, 1, &[0]),       // single-leaf historical size
+            (9, 3, &[1, 2]),    // n=3 (0b11)  -> 2 peaks
+            (9, 4, &[0, 3]),    // n=4 (0b100) -> single peak
+            (16, 9, &[0, 8]),   // proving the last leaf of the historical size
+            (5, 5, &[2]),       // historical size == current size
+        ];
+
+        for &(total, n, indices) in cases {
+            let leaves = generate_leaves(total);
+            // Tree grown to `total` leaves over its store.
+            let full = MKTree::<MKTreeStoreInMemory>::new(&leaves).unwrap();
+            // Reference tree containing exactly the first `n` leaves.
+            let reference = MKTree::<MKTreeStoreInMemory>::new(&leaves[..n as usize]).unwrap();
+
+            let values: Vec<MKTreeNode> =
+                indices.iter().map(|&i| leaves[i as usize].to_owned()).collect();
+            let reference_proof = reference.compute_proof(&values).unwrap();
+
+            let indexed: Vec<(u64, MKTreeNode)> =
+                indices.iter().map(|&i| (i, leaves[i as usize].to_owned())).collect();
+            let view_proof = full.generate_proof_at_size(n, &indexed).unwrap();
+
+            assert_eq!(
+                reference_proof.to_bytes().unwrap(),
+                view_proof.to_bytes().unwrap(),
+                "proof bytes differ for total={total}, n={n}, indices={indices:?}"
+            );
+            assert_eq!(
+                reference.compute_root().unwrap(),
+                full.compute_root_at_size(n).unwrap(),
+                "root differs for total={total}, n={n}"
+            );
+            view_proof.verify().unwrap();
+        }
+    }
+
+    #[test]
+    fn from_storer_at_size_then_append_matches_a_fresh_build() {
+        let leaves = generate_leaves(7);
+        let expected = MKTree::<MKTreeStoreInMemory>::new(&leaves).unwrap();
+
+        let mut tree = MKTree::<MKTreeStoreInMemory>::from_storer_at_size(
+            MKTreeStoreInMemory::build().unwrap(),
+            0,
+        )
+        .unwrap();
+        tree.append(&leaves).unwrap();
+
+        assert_eq!(
+            expected.compute_root().unwrap(),
+            tree.compute_root().unwrap()
+        );
+    }
+
+    #[test]
+    fn historical_size_helpers_reject_an_empty_size() {
+        let full = MKTree::<MKTreeStoreInMemory>::new(&generate_leaves(3)).unwrap();
+
+        full.generate_proof_at_size(0, &[])
+            .expect_err("empty size should be rejected");
+        full.compute_root_at_size(0)
+            .expect_err("empty size should be rejected");
     }
 
     #[test]
