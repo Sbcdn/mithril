@@ -109,21 +109,27 @@ impl<'a> APISpec<'a> {
         let fake_base_url = "http://0.0.0.1";
         let url = Url::parse(&format!("{fake_base_url}{path}")).unwrap();
 
-        check_query_parameter_limitations(&url, operation_object);
+        // Names of the query parameters declared for this operation in the spec.
+        let spec_query_parameter_names: Vec<String> = operation_object["parameters"]
+            .as_array()
+            .map(|parameters| {
+                parameters
+                    .iter()
+                    .filter(|p| p["in"].eq("query"))
+                    .filter_map(|p| p["name"].as_str().map(|name| name.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        let mut query_pairs = url.query_pairs();
-        if let Some(parameter) = query_pairs.next() {
-            let spec_parameter = &operation_object["parameters"][0];
-            let spec_parameter_name = &spec_parameter["name"].as_str().unwrap();
-            let spec_parameter_in = &spec_parameter["in"].as_str().unwrap();
-            if spec_parameter_in.eq(&"query") && spec_parameter_name.eq(&parameter.0) {
-                Ok(self)
-            } else {
-                Err(format!("Unexpected query parameter '{}'", parameter.0))
+        // Every query parameter present in the request must be declared in the spec.
+        // (Supports any number of query parameters, not just one.)
+        for (name, _value) in url.query_pairs() {
+            if !spec_query_parameter_names.iter().any(|n| n.as_str() == name.as_ref()) {
+                return Err(format!("Unexpected query parameter '{name}'"));
             }
-        } else {
-            Ok(self)
         }
+
+        Ok(self)
     }
 
     /// Validates if the status is the expected one
@@ -311,25 +317,6 @@ impl<'a> APISpec<'a> {
             vec![format!("- {}: Error\n{}", name, errors.join("\n"))]
         } else {
             vec![]
-        }
-    }
-}
-
-// TODO: For now, it verifies only one parameter,
-// should verify with multiple query parameters using an openapi.yaml file for test.
-fn check_query_parameter_limitations(url: &Url, operation_object: &Value) {
-    if url.query_pairs().count() >= 2 {
-        panic!("This method does not work with multiple parameters");
-    }
-
-    if let Some(parameters) = operation_object["parameters"].as_array() {
-        let len = parameters
-            .iter()
-            .filter(|p| p["in"].eq("query"))
-            .collect::<Vec<_>>()
-            .len();
-        if len >= 2 {
-            panic!("This method does not work with multiple parameters");
         }
     }
 }
@@ -725,6 +712,33 @@ components:
         assert_eq!(
             result.err().unwrap().to_string(),
             "Unexpected query parameter 'whatever'",
+        );
+    }
+
+    #[test]
+    fn test_validate_query_parameters_with_multiple_declared_parameters() {
+        let api_spec = APISpec::from_file(DEFAULT_SPEC_FILE);
+        api_spec
+            .validate_query_parameters(
+                "/proof/cardano-transaction?transaction_hashes=a123,b456&up_to_block_number=789",
+                &api_spec.openapi["paths"]["/proof/cardano-transaction"]["get"],
+            )
+            .map(|_apispec| ())
+            .unwrap()
+    }
+
+    #[test]
+    fn test_validate_query_parameters_rejects_unknown_among_multiple() {
+        let api_spec = APISpec::from_file(DEFAULT_SPEC_FILE);
+        let result = api_spec.validate_query_parameters(
+            "/proof/cardano-transaction?transaction_hashes=a123&bogus=1",
+            &api_spec.openapi["paths"]["/proof/cardano-transaction"]["get"],
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.err().unwrap().to_string(),
+            "Unexpected query parameter 'bogus'",
         );
     }
 
