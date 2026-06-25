@@ -248,23 +248,50 @@ impl CertificateChainSynchronizer for MithrilCertificateChainSynchronizer {
             return Ok(None);
         };
 
-        // Verify the certificate's multi-signature and that it links to its parent, which belongs
-        // to the genesis-anchored chain kept in sync by `synchronize_certificate_chain`.
-        self.certificate_verifier
-            .verify_certificate(
-                &certificate,
-                &self.genesis_verifier.to_ed25519_verification_key(),
-            )
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to verify remote certificate: `{}`",
-                    certificate.hash
-                )
-            })?;
+        // If we already hold this certificate, it (and its ancestors) were verified and stored on
+        // a previous cycle. Re-storing it would delete the existing row (INSERT OR REPLACE) and
+        // fail a foreign-key constraint once a signed-entity references it. Return it as-is so the
+        // caller's up-to-date check decides whether the artifact still needs (re)building.
+        if self.certificate_storer.exists(&certificate.hash).await? {
+            debug!(
+                self.logger, "Remote certificate already synchronized";
+                "discriminant" => %discriminant,
+                "certificate_hash" => &certificate.hash
+            );
+            return Ok(Some(certificate));
+        }
 
+        // Walk back from the certificate, verifying each multi-signature and parent link, until we
+        // reach a certificate already present locally (or genesis). A follower stores only tip
+        // transaction-proof certificates, so the parent chain back to the genesis-anchored main
+        // chain (kept in sync by `synchronize_certificate_chain`) may not be stored yet — and the
+        // `certificate.parent_certificate_id` foreign key requires every parent to exist. Collect
+        // the missing segment and store it parent-first so each insert's parent is present.
+        let genesis_verification_key = self.genesis_verifier.to_ed25519_verification_key();
+        let mut missing_certificates = Vec::new();
+        let mut current = certificate.clone();
+        loop {
+            let parent = self
+                .certificate_verifier
+                .verify_certificate(&current, &genesis_verification_key)
+                .await
+                .with_context(|| {
+                    format!("Failed to verify remote certificate: `{}`", current.hash)
+                })?;
+            missing_certificates.push(current);
+            match parent {
+                // Reached the genesis certificate (no parent): the whole segment is missing.
+                None => break,
+                // The parent is already anchored locally: stop, the missing segment is complete.
+                Some(parent) if self.certificate_storer.exists(&parent.hash).await? => break,
+                Some(parent) => current = parent,
+            }
+        }
+
+        // Store oldest-first so each `parent_certificate_id` foreign key is satisfied at insert.
+        missing_certificates.reverse();
         self.certificate_storer
-            .insert_or_replace_many(vec![certificate.clone()])
+            .insert_or_replace_many(missing_certificates)
             .await?;
 
         debug!(
@@ -428,6 +455,15 @@ mod tests {
             let mut certificates = self.certificates.write().unwrap();
             *certificates = certificates_chain;
             Ok(())
+        }
+
+        async fn exists(&self, certificate_hash: &str) -> StdResult<bool> {
+            Ok(self
+                .certificates
+                .read()
+                .unwrap()
+                .iter()
+                .any(|certificate| certificate.hash == certificate_hash))
         }
 
         async fn get_latest_genesis(&self) -> StdResult<Option<Certificate>> {
@@ -854,6 +890,7 @@ mod tests {
                 ),
                 certificate_storer: MockBuilder::<MockSynchronizedCertificateStorer>::configure(
                     |storer| {
+                        storer.expect_exists().once().return_once(|_| Ok(false));
                         storer.expect_insert_or_replace_many().once().return_once(|_| Ok(()));
                     },
                 ),
@@ -866,6 +903,101 @@ mod tests {
                 .unwrap();
 
             assert_eq!(Some(certificate.hash), synchronized.map(|c| c.hash));
+        }
+
+        #[tokio::test]
+        async fn returns_existing_certificate_without_reverifying_or_restoring() {
+            // The certificate is already in the local store: it must NOT be re-verified or
+            // re-stored (re-storing would break the FK constraint once a signed-entity references
+            // it). The default verifier/storer mocks reject any unexpected call.
+            let certificate = fake_data::certificate("ct-cert".to_string());
+            let synchronizer = MithrilCertificateChainSynchronizer {
+                remote_certificate_retriever:
+                    MockBuilder::<MockRemoteCertificateRetriever>::configure({
+                        let certificate = certificate.clone();
+                        move |retriever| {
+                            retriever
+                                .expect_get_latest_certificate_for_discriminant()
+                                .return_once(move |_| Ok(Some(certificate)));
+                        }
+                    }),
+                certificate_storer: MockBuilder::<MockSynchronizedCertificateStorer>::configure(
+                    |storer| {
+                        storer.expect_exists().once().return_once(|_| Ok(true));
+                        storer.expect_insert_or_replace_many().never();
+                    },
+                ),
+                ..MithrilCertificateChainSynchronizer::default_for_test()
+            };
+
+            let synchronized = synchronizer
+                .synchronize_certificate(SignedEntityTypeDiscriminants::CardanoTransactions)
+                .await
+                .unwrap();
+
+            assert_eq!(Some(certificate.hash), synchronized.map(|c| c.hash));
+        }
+
+        #[tokio::test]
+        async fn stores_missing_ancestor_segment_parent_first() {
+            // The tip certificate's parent is not yet in the local store (the main-chain sync has
+            // not reached it). The synchronizer must walk back, collect the missing segment, and
+            // store it oldest-first so the `parent_certificate_id` foreign key holds at each insert.
+            let tip = fake_data::certificate("ct-tip".to_string());
+            let parent = fake_data::certificate("ct-parent".to_string());
+            let tip_hash = tip.hash.clone();
+            let parent_hash = parent.hash.clone();
+            let synchronizer = MithrilCertificateChainSynchronizer {
+                remote_certificate_retriever:
+                    MockBuilder::<MockRemoteCertificateRetriever>::configure({
+                        let tip = tip.clone();
+                        move |retriever| {
+                            retriever
+                                .expect_get_latest_certificate_for_discriminant()
+                                .return_once(move |_| Ok(Some(tip)));
+                        }
+                    }),
+                certificate_verifier: MockBuilder::<MockCertificateVerifier>::configure({
+                    let parent = parent.clone();
+                    let tip_hash = tip_hash.clone();
+                    move |verifier| {
+                        verifier.expect_verify_certificate().times(2).returning(
+                            move |certificate, _| {
+                                if certificate.hash == tip_hash {
+                                    Ok(Some(parent.clone()))
+                                } else {
+                                    Ok(None)
+                                }
+                            },
+                        );
+                    }
+                }),
+                certificate_storer: MockBuilder::<MockSynchronizedCertificateStorer>::configure({
+                    let parent_hash = parent_hash.clone();
+                    move |storer| {
+                        // tip absent (early check) + parent absent (loop check).
+                        storer.expect_exists().times(2).returning(|_| Ok(false));
+                        storer.expect_insert_or_replace_many().once().returning(
+                            move |certificates| {
+                                assert_eq!(2, certificates.len());
+                                assert_eq!(
+                                    parent_hash, certificates[0].hash,
+                                    "parent must be first"
+                                );
+                                Ok(())
+                            },
+                        );
+                    }
+                }),
+                ..MithrilCertificateChainSynchronizer::default_for_test()
+            };
+
+            let synchronized = synchronizer
+                .synchronize_certificate(SignedEntityTypeDiscriminants::CardanoTransactions)
+                .await
+                .unwrap();
+
+            assert_eq!(Some(tip_hash), synchronized.map(|c| c.hash));
         }
 
         #[tokio::test]

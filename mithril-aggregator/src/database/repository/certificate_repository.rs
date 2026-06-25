@@ -168,6 +168,10 @@ impl SynchronizedCertificateStorer for CertificateRepository {
         Ok(())
     }
 
+    async fn exists(&self, certificate_hash: &str) -> StdResult<bool> {
+        Ok(self.get_certificate::<Certificate>(certificate_hash).await?.is_some())
+    }
+
     async fn get_latest_genesis(&self) -> StdResult<Option<Certificate>> {
         self.get_latest_genesis_certificate().await
     }

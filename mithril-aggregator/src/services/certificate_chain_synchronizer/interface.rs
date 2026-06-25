@@ -52,6 +52,9 @@ pub trait SynchronizedCertificateStorer: Send + Sync {
     /// Insert a list of Certificates in the database, if some already exists, they will be deleted before inserting
     async fn insert_or_replace_many(&self, certificates: Vec<Certificate>) -> StdResult<()>;
 
+    /// Return whether a certificate with the given hash already exists in the local store
+    async fn exists(&self, certificate_hash: &str) -> StdResult<bool>;
+
     /// Get the latest genesis Certificate
     async fn get_latest_genesis(&self) -> StdResult<Option<Certificate>>;
 }
