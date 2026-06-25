@@ -6,8 +6,7 @@ use std::time::Duration;
 
 use mithril_common::StdResult;
 use mithril_common::entities::{
-    BlockNumber, Certificate, Epoch, ProtocolMessage, ProtocolMessagePartKey, SignedEntityType,
-    TimePoint,
+    Certificate, Epoch, ProtocolMessage, SignedEntityType, SignedEntityTypeDiscriminants, TimePoint,
 };
 use mithril_common::logging::LoggerExtensions;
 use mithril_persistence::store::StakeStorer;
@@ -83,10 +82,13 @@ pub trait AggregatorRunnerTrait: Sync + Send {
 
     /// Synchronize the leader's latest CardanoTransactions certificate (follower only).
     ///
-    /// A follower aggregator cannot produce CardanoTransactions certificates (it has no signers),
-    /// so it fetches, verifies, and stores the leader's, then builds the corresponding artifact,
-    /// signed-entity, and prover cache from the verified certificate.
-    async fn sync_leader_cardano_transactions_certificate(&self) -> StdResult<()>;
+    /// A follower aggregator cannot produce transaction-proof certificates (it has no signers), so
+    /// it fetches, verifies, and stores the leader's latest certificate for `discriminant`, then
+    /// builds the corresponding artifact, signed-entity, and prover cache from it.
+    async fn sync_leader_certificate(
+        &self,
+        discriminant: SignedEntityTypeDiscriminants,
+    ) -> StdResult<()>;
 
     /// Compute the protocol message
     async fn compute_protocol_message(
@@ -524,56 +526,61 @@ impl AggregatorRunnerTrait for AggregatorRunner {
             .await
     }
 
-    async fn sync_leader_cardano_transactions_certificate(&self) -> StdResult<()> {
-        debug!(
-            self.logger,
-            ">> sync_leader_cardano_transactions_certificate"
-        );
+    async fn sync_leader_certificate(
+        &self,
+        discriminant: SignedEntityTypeDiscriminants,
+    ) -> StdResult<()> {
+        debug!(self.logger, ">> sync_leader_certificate"; "discriminant" => %discriminant);
 
         let Some(certificate) = self
             .dependencies
             .certificate_chain_synchronizer
-            .synchronize_cardano_transactions_certificate()
+            .synchronize_certificate(discriminant)
             .await?
         else {
             return Ok(());
         };
 
-        let block_number = BlockNumber(
-            certificate
-                .protocol_message
-                .get_message_part(&ProtocolMessagePartKey::LatestBlockNumber)
-                .with_context(|| {
-                    format!(
-                        "Synced CardanoTransactions certificate '{}' has no latest_block_number",
-                        certificate.hash
-                    )
-                })?
-                .parse::<u64>()
-                .with_context(|| "Could not parse latest_block_number of synced certificate")?,
-        );
-        let signed_entity_type =
-            SignedEntityType::CardanoTransactions(certificate.epoch, block_number);
+        // The verified certificate carries its own signed-entity-type (with the certified tip); use
+        // it directly. Resolve the certified block number and the latest local snapshot's block
+        // number per protocol — both are needed only to skip rebuilding the artifact/prover cache
+        // when we already hold a snapshot at or beyond this tip (avoids recomputing every cycle).
+        let signed_entity_type = certificate.signed_entity_type();
+        let (block_number, latest_local_block_number) = match &signed_entity_type {
+            SignedEntityType::CardanoTransactions(_, block_number) => (
+                *block_number,
+                self.dependencies
+                    .signed_entity_service
+                    .get_last_cardano_transaction_snapshot()
+                    .await?
+                    .map(|snapshot| snapshot.artifact.block_number),
+            ),
+            SignedEntityType::CardanoBlocksTransactions(_, block_number, _) => (
+                *block_number,
+                self.dependencies
+                    .signed_entity_service
+                    .get_last_cardano_blocks_transactions_snapshot()
+                    .await?
+                    .map(|snapshot| snapshot.artifact.block_number_signed),
+            ),
+            // Only transaction-proof certificates are followed this way; the genesis-anchored chain
+            // (MithrilStakeDistribution etc.) is kept in sync by `synchronize_certificate_chain`.
+            _ => return Ok(()),
+        };
 
-        // Skip rebuilding the artifact/prover cache when we already hold a snapshot at or beyond
-        // this tip (avoids recomputing the same cache every cycle).
-        if let Some(latest) = self
-            .dependencies
-            .signed_entity_service
-            .get_last_cardano_transaction_snapshot()
-            .await?
-            && latest.artifact.block_number >= block_number
+        if let Some(latest_local_block_number) = latest_local_block_number
+            && latest_local_block_number >= block_number
         {
             debug!(
-                self.logger, "CardanoTransactions snapshot already up to date";
+                self.logger, "Synced certificate snapshot already up to date";
+                "discriminant" => %discriminant,
                 "block_number" => *block_number
             );
             return Ok(());
         }
 
-        // Reuse the standard artifact-creation path with the verified, synchronized certificate:
-        // it builds the CardanoTransactionsSnapshot, computes the prover cache, and stores the
-        // signed-entity.
+        // Reuse the standard artifact-creation path with the verified, synchronized certificate: it
+        // builds the snapshot, computes the prover cache, and stores the signed-entity.
         self.create_artifact(&signed_entity_type, &certificate).await
     }
 }

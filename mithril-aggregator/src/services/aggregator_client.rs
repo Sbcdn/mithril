@@ -9,7 +9,7 @@ use mithril_aggregator_client::{
 };
 use mithril_common::{
     StdResult,
-    entities::{Certificate, Epoch, SignedEntityType},
+    entities::{Certificate, Epoch, SignedEntityTypeDiscriminants},
     messages::{MithrilStakeDistributionMessage, SignedEntityTypeMessage, TryFromMessageAdapter},
 };
 
@@ -58,15 +58,17 @@ impl RemoteCertificateRetriever for AggregatorHttpClient {
         }
     }
 
-    async fn get_latest_cardano_transactions_certificate_details(
+    async fn get_latest_certificate_for_discriminant(
         &self,
+        discriminant: SignedEntityTypeDiscriminants,
     ) -> StdResult<Option<Certificate>> {
         let latest_certificates_list = self.send(GetCertificatesListQuery::latest()).await?;
 
         match latest_certificates_list.iter().find(|item| {
             matches!(
-                item.signed_entity_type,
-                SignedEntityTypeMessage::Known(SignedEntityType::CardanoTransactions(..))
+                &item.signed_entity_type,
+                SignedEntityTypeMessage::Known(entity_type)
+                    if SignedEntityTypeDiscriminants::from(entity_type) == discriminant
             )
         }) {
             None => Ok(None),

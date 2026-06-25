@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use mithril_common::StdResult;
-use mithril_common::entities::Certificate;
+use mithril_common::entities::{Certificate, SignedEntityTypeDiscriminants};
 
 use crate::entities::OpenMessage;
 
@@ -15,14 +15,17 @@ pub trait CertificateChainSynchronizer: Send + Sync {
     /// if the remote source has started a new chain with a new Genesis.
     async fn synchronize_certificate_chain(&self, force: bool) -> StdResult<()>;
 
-    /// Fetch, verify, and store the remote source's latest CardanoTransactions certificate.
+    /// Fetch, verify, and store the remote source's latest certificate for `discriminant`.
     ///
     /// The certificate's multi-signature is verified and it is checked to link into the
     /// genesis-anchored certificate chain (which [`synchronize_certificate_chain`] keeps in sync).
     /// Returns the verified certificate, or `None` if the remote source has none. Used by follower
-    /// aggregators, which cannot produce CardanoTransactions certificates themselves (they have no
-    /// signers), so they synchronize the leader's instead.
-    async fn synchronize_cardano_transactions_certificate(&self) -> StdResult<Option<Certificate>>;
+    /// aggregators, which cannot produce these certificates themselves (they have no signers), so
+    /// they synchronize the leader's instead.
+    async fn synchronize_certificate(
+        &self,
+        discriminant: SignedEntityTypeDiscriminants,
+    ) -> StdResult<Option<Certificate>>;
 }
 
 /// Define how to retrieve remote certificate details
@@ -32,9 +35,10 @@ pub trait RemoteCertificateRetriever: Sync + Send {
     /// Get latest certificate
     async fn get_latest_certificate_details(&self) -> StdResult<Option<Certificate>>;
 
-    /// Get the latest CardanoTransactions certificate
-    async fn get_latest_cardano_transactions_certificate_details(
+    /// Get the latest certificate for the given signed-entity-type discriminant
+    async fn get_latest_certificate_for_discriminant(
         &self,
+        discriminant: SignedEntityTypeDiscriminants,
     ) -> StdResult<Option<Certificate>>;
 
     /// Get genesis certificate

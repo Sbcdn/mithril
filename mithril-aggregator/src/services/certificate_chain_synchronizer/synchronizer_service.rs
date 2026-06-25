@@ -30,7 +30,7 @@ use std::sync::Arc;
 use mithril_common::StdResult;
 use mithril_common::certificate_chain::CertificateVerifier;
 use mithril_common::crypto_helper::GenesisVerifier;
-use mithril_common::entities::{Certificate, SignedEntityType};
+use mithril_common::entities::{Certificate, SignedEntityType, SignedEntityTypeDiscriminants};
 use mithril_common::logging::LoggerExtensions;
 
 use crate::EpochSettingsStorer;
@@ -232,15 +232,18 @@ impl CertificateChainSynchronizer for MithrilCertificateChainSynchronizer {
         Ok(())
     }
 
-    async fn synchronize_cardano_transactions_certificate(&self) -> StdResult<Option<Certificate>> {
+    async fn synchronize_certificate(
+        &self,
+        discriminant: SignedEntityTypeDiscriminants,
+    ) -> StdResult<Option<Certificate>> {
         let Some(certificate) = self
             .remote_certificate_retriever
-            .get_latest_cardano_transactions_certificate_details()
+            .get_latest_certificate_for_discriminant(discriminant)
             .await?
         else {
             debug!(
-                self.logger,
-                "No remote CardanoTransactions certificate to synchronize"
+                self.logger, "No remote certificate to synchronize";
+                "discriminant" => %discriminant
             );
             return Ok(None);
         };
@@ -255,7 +258,7 @@ impl CertificateChainSynchronizer for MithrilCertificateChainSynchronizer {
             .await
             .with_context(|| {
                 format!(
-                    "Failed to verify remote CardanoTransactions certificate: `{}`",
+                    "Failed to verify remote certificate: `{}`",
                     certificate.hash
                 )
             })?;
@@ -265,7 +268,8 @@ impl CertificateChainSynchronizer for MithrilCertificateChainSynchronizer {
             .await?;
 
         debug!(
-            self.logger, "Synchronized remote CardanoTransactions certificate";
+            self.logger, "Synchronized remote certificate";
+            "discriminant" => %discriminant,
             "certificate_hash" => &certificate.hash
         );
         Ok(Some(certificate))
@@ -821,7 +825,9 @@ mod tests {
         }
     }
 
-    mod synchronize_cardano_transactions_certificate {
+    mod synchronize_certificate {
+        use mockall::predicate::eq;
+
         use super::*;
 
         #[tokio::test]
@@ -833,8 +839,9 @@ mod tests {
                         let certificate = certificate.clone();
                         move |retriever| {
                             retriever
-                                .expect_get_latest_cardano_transactions_certificate_details()
-                                .return_once(move || Ok(Some(certificate)));
+                                .expect_get_latest_certificate_for_discriminant()
+                                .with(eq(SignedEntityTypeDiscriminants::CardanoTransactions))
+                                .return_once(move |_| Ok(Some(certificate)));
                         }
                     }),
                 certificate_verifier: MockBuilder::<MockCertificateVerifier>::configure(
@@ -854,7 +861,7 @@ mod tests {
             };
 
             let synchronized = synchronizer
-                .synchronize_cardano_transactions_certificate()
+                .synchronize_certificate(SignedEntityTypeDiscriminants::CardanoTransactions)
                 .await
                 .unwrap();
 
@@ -862,20 +869,20 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn returns_none_when_remote_has_no_cardano_transactions_certificate() {
+        async fn returns_none_when_remote_has_no_certificate() {
             let synchronizer = MithrilCertificateChainSynchronizer {
                 remote_certificate_retriever:
                     MockBuilder::<MockRemoteCertificateRetriever>::configure(|retriever| {
                         retriever
-                            .expect_get_latest_cardano_transactions_certificate_details()
-                            .return_once(|| Ok(None));
+                            .expect_get_latest_certificate_for_discriminant()
+                            .return_once(|_| Ok(None));
                     }),
                 ..MithrilCertificateChainSynchronizer::default_for_test()
             };
 
             assert!(
                 synchronizer
-                    .synchronize_cardano_transactions_certificate()
+                    .synchronize_certificate(SignedEntityTypeDiscriminants::CardanoTransactions)
                     .await
                     .unwrap()
                     .is_none()

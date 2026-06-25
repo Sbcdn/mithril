@@ -1,5 +1,5 @@
 use mithril_common::StdResult;
-use mithril_common::entities::Certificate;
+use mithril_common::entities::{Certificate, SignedEntityTypeDiscriminants};
 
 use crate::services::CertificateChainSynchronizer;
 
@@ -12,7 +12,10 @@ impl CertificateChainSynchronizer for MithrilCertificateChainSynchronizerNoop {
         Ok(())
     }
 
-    async fn synchronize_cardano_transactions_certificate(&self) -> StdResult<Option<Certificate>> {
+    async fn synchronize_certificate(
+        &self,
+        _discriminant: SignedEntityTypeDiscriminants,
+    ) -> StdResult<Option<Certificate>> {
         Ok(None)
     }
 }

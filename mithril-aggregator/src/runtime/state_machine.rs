@@ -4,7 +4,7 @@ use slog::{Logger, info, trace, warn};
 use std::fmt::Display;
 use std::sync::Arc;
 
-use mithril_common::entities::{SignedEntityType, TimePoint};
+use mithril_common::entities::{SignedEntityType, SignedEntityTypeDiscriminants, TimePoint};
 use mithril_common::logging::LoggerExtensions;
 
 use crate::AggregatorConfig;
@@ -312,21 +312,28 @@ impl AggregatorRuntime {
         {
             Some(certificate) => certificate,
             None => {
-                // A follower aggregator cannot produce CardanoTransactions certificates (it has no
+                // A follower aggregator cannot produce transaction-proof certificates (it has no
                 // signers feeding it signatures), so it side-synchronizes the leader's verified
                 // certificate instead. The leader path is unchanged (it reaches quorum and never
                 // enters this branch).
+                let signed_entity_type = &state.open_message.signed_entity_type;
                 if self.config.is_follower
                     && matches!(
-                        state.open_message.signed_entity_type,
+                        signed_entity_type,
                         SignedEntityType::CardanoTransactions(..)
+                            | SignedEntityType::CardanoBlocksTransactions(..)
                     )
-                    && let Err(error) =
-                        self.runner.sync_leader_cardano_transactions_certificate().await
+                    && let Err(error) = self
+                        .runner
+                        .sync_leader_certificate(SignedEntityTypeDiscriminants::from(
+                            signed_entity_type,
+                        ))
+                        .await
                 {
                     warn!(
                         self.logger,
-                        "Follower failed to synchronize the leader's CardanoTransactions certificate";
+                        "Follower failed to synchronize the leader's certificate";
+                        "signed_entity_type" => ?signed_entity_type,
                         "error" => ?error
                     );
                 }
@@ -866,7 +873,9 @@ mod tests {
     mod follower {
         use mockall::predicate::eq;
 
-        use mithril_common::entities::{BlockNumber, Epoch};
+        use mithril_common::entities::{
+            BlockNumber, BlockNumberOffset, Epoch, SignedEntityTypeDiscriminants,
+        };
 
         use super::*;
 
@@ -999,11 +1008,12 @@ mod tests {
                 .once()
                 .returning(|_, _| Ok(false));
             runner.expect_create_certificate().once().returning(|_| Ok(None));
-            // Follower fallback: side-synchronize the leader's CardanoTransactions certificate.
+            // Follower fallback: side-synchronize the leader's certificate for this discriminant.
             runner
-                .expect_sync_leader_cardano_transactions_certificate()
+                .expect_sync_leader_certificate()
+                .with(eq(SignedEntityTypeDiscriminants::CardanoTransactions))
                 .once()
-                .returning(|| Ok(()));
+                .returning(|_| Ok(()));
             runner
                 .expect_increment_runtime_cycle_total_since_startup_counter()
                 .once()
@@ -1034,7 +1044,8 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn signing_without_signatures_does_not_synchronize_for_non_cardano_transactions() {
+        async fn signing_without_signatures_synchronizes_leader_cardano_blocks_transactions_certificate()
+         {
             let mut runner = MockAggregatorRunner::new();
             runner
                 .expect_get_time_point_from_chain()
@@ -1045,9 +1056,57 @@ mod tests {
                 .once()
                 .returning(|_, _| Ok(false));
             runner.expect_create_certificate().once().returning(|_| Ok(None));
-            // Not a CardanoTransactions open message: the follower must NOT synchronize
+            // Same fallback generalizes to CardanoBlocksTransactions (v2).
+            runner
+                .expect_sync_leader_certificate()
+                .with(eq(SignedEntityTypeDiscriminants::CardanoBlocksTransactions))
+                .once()
+                .returning(|_| Ok(()));
+            runner
+                .expect_increment_runtime_cycle_total_since_startup_counter()
+                .once()
+                .returning(|| ());
+            runner
+                .expect_increment_runtime_cycle_success_since_startup_counter()
+                .never();
+
+            let state = SigningState {
+                current_time_point: TimePoint::dummy(),
+                open_message: OpenMessage {
+                    signed_entity_type: SignedEntityType::CardanoBlocksTransactions(
+                        Epoch(1),
+                        BlockNumber(100),
+                        BlockNumberOffset(50),
+                    ),
+                    ..OpenMessage::dummy()
+                },
+            };
+            let mut runtime =
+                init_runtime(Some(AggregatorState::Signing(state)), runner, true).await;
+            let err = runtime
+                .cycle()
+                .await
+                .expect_err("cycle should keep state while waiting");
+
+            assert!(matches!(err, RuntimeError::KeepState { .. }));
+            assert_eq!("signing".to_string(), runtime.get_state());
+        }
+
+        #[tokio::test]
+        async fn signing_without_signatures_does_not_synchronize_for_non_transaction_proof() {
+            let mut runner = MockAggregatorRunner::new();
+            runner
+                .expect_get_time_point_from_chain()
+                .once()
+                .returning(|| Ok(TimePoint::dummy()));
+            runner
+                .expect_is_open_message_outdated()
+                .once()
+                .returning(|_, _| Ok(false));
+            runner.expect_create_certificate().once().returning(|_| Ok(None));
+            // Not a transaction-proof open message: the follower must NOT synchronize
             // (an unexpected call would make the mock panic).
-            runner.expect_sync_leader_cardano_transactions_certificate().never();
+            runner.expect_sync_leader_certificate().never();
             runner
                 .expect_increment_runtime_cycle_total_since_startup_counter()
                 .once()
