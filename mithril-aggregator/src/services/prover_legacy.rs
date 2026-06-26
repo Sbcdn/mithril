@@ -51,7 +51,15 @@ pub trait TransactionsRetriever: Sync + Send {
     ) -> StdResult<Vec<CardanoTransaction>>;
 }
 
-/// Legacy Mithril prover
+/// v1 ([`LegacyProverService`]) prover that rebuilds the block-range-roots Merkle map per certified
+/// tip from a pooled cache.
+///
+/// The default build serves transaction proofs from the append-only MMR accumulator
+/// ([`AccumulatorProverService`]) instead, which covers any historical tip from a single tree. This
+/// rebuild implementation is retained as the reference that the accumulator's proofs are
+/// differentially tested against — they must be byte-identical (see `services::accumulator`).
+///
+/// [`AccumulatorProverService`]: crate::services::AccumulatorProverService
 pub struct LegacyMithrilProverService<S: MKTreeStorer> {
     transaction_retriever: Arc<dyn TransactionsRetriever>,
     block_range_root_retriever: Arc<dyn LegacyBlockRangeRootRetriever<S>>,

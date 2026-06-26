@@ -18,7 +18,8 @@ pub trait CertificateChainSynchronizer: Send + Sync {
     /// Fetch, verify, and store the remote source's latest certificate for `discriminant`.
     ///
     /// The certificate's multi-signature is verified and it is checked to link into the
-    /// genesis-anchored certificate chain (which [`synchronize_certificate_chain`] keeps in sync).
+    /// genesis-anchored certificate chain (which [`Self::synchronize_certificate_chain`] keeps in
+    /// sync).
     /// Returns the verified certificate, or `None` if the remote source has none. Used by follower
     /// aggregators, which cannot produce these certificates themselves (they have no signers), so
     /// they synchronize the leader's instead.
