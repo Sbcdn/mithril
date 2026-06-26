@@ -347,7 +347,7 @@ mod tests {
 
         assert_eq!(1, proofs.len());
         assert_eq!(
-            &[in_first_range.transaction_hash.clone()],
+            std::slice::from_ref(&in_first_range.transaction_hash),
             proofs[0].transactions_hashes()
         );
         proofs[0].verify().unwrap();

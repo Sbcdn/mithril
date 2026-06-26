@@ -1,16 +1,22 @@
-//! MMR accumulator prover (feature `prover-accumulator`).
+//! MMR accumulator prover.
 //!
 //! Serves Cardano transaction Merkle inclusion proofs against historical certified tips from a
 //! single append-only block-range-roots accumulator, instead of rebuilding a per-tip Merkle map.
 //! Proofs and roots are byte-identical to the rebuild path; only the service layer differs.
+//!
+//! The accumulator runs over any [`MKTreeStorer`]; the default build uses an in-memory store. The
+//! optional `prover-accumulator` feature adds a redb-backed store ([`MKTreeStoreRedb`]) for
+//! off-RAM, restart-persistent proof serving.
 
 mod blocks_prover;
 mod overlay;
 mod prover;
+#[cfg(feature = "prover-accumulator")]
 mod store;
 
 pub use blocks_prover::AccumulatorBlocksProverService;
 pub use prover::AccumulatorProverService;
+#[cfg(feature = "prover-accumulator")]
 pub use store::MKTreeStoreRedb;
 
 use slog::{Logger, info};

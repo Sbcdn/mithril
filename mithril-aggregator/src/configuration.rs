@@ -239,8 +239,9 @@ pub trait ConfigurationSource {
         panic!("allow_unparsable_block is not implemented.");
     }
 
-    /// Whether the Cardano transactions prover serves proofs from the MMR accumulator
-    /// (requires the `prover-accumulator` build feature)
+    /// Whether to back the transaction-proof accumulator with the restart-persistent, off-RAM
+    /// redb store instead of keeping it in memory (requires the `prover-accumulator` build
+    /// feature). The accumulator itself is always used; this only selects its storage backend.
     fn cardano_transactions_prover_use_accumulator(&self) -> bool {
         panic!("cardano_transactions_prover_use_accumulator is not implemented.");
     }
@@ -627,8 +628,9 @@ pub struct ServeCommandConfiguration {
     /// Will be ignored on (pre)production networks.
     pub allow_unparsable_block: bool,
 
-    /// Whether the Cardano transactions prover serves proofs from the MMR accumulator
-    /// (requires the `prover-accumulator` build feature)
+    /// Whether to back the transaction-proof accumulator with the restart-persistent, off-RAM
+    /// redb store instead of keeping it in memory (requires the `prover-accumulator` build
+    /// feature). The accumulator itself is always used; this only selects its storage backend.
     pub cardano_transactions_prover_use_accumulator: bool,
 
     /// Cardano blocks and transactions prover cache pool size
