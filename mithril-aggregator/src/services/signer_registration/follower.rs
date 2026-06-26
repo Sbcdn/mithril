@@ -8,7 +8,9 @@ use mithril_common::{
     StdResult,
     certificate_chain::{CertificateRetriever, CertificateVerifier},
     crypto_helper::{GenesisVerifier, ProtocolKey},
-    entities::{Epoch, ProtocolMessagePartKey, Signer, SignerWithStake, StakeDistribution},
+    entities::{
+        Epoch, ProtocolMessagePartKey, SignedEntityType, Signer, SignerWithStake, StakeDistribution,
+    },
     logging::LoggerExtensions,
     messages::SignerWithStakeMessagePart,
     protocol::SignerBuilder,
@@ -210,6 +212,19 @@ impl MithrilSignerRegistrationFollower {
                 )
             })?;
 
+        // Trust step 1b: bind the verified certificate to `signer_epoch`. The signed entity type is
+        // part of the certificate hash, so a leader cannot pass off a (validly signed) certificate
+        // for another epoch — or for a different signed entity entirely — as this epoch's stake
+        // distribution and thereby seed the wrong signer set.
+        let expected_signed_entity_type = SignedEntityType::MithrilStakeDistribution(signer_epoch);
+        if certificate.signed_entity_type() != expected_signed_entity_type {
+            return Err(anyhow!(
+                "Certificate '{}' certifies {:?}, expected {expected_signed_entity_type:?}",
+                certificate.hash,
+                certificate.signed_entity_type(),
+            ));
+        }
+
         let signers_with_stake =
             SignerWithStakeMessagePart::try_into_signers(stake_distribution.signers_with_stake)
                 .with_context(|| "Failed parsing the stake distribution signers")?;
@@ -408,7 +423,7 @@ mod tests {
     use chrono::{DateTime, Utc};
 
     use mithril_common::crypto_helper::GenesisVerifier;
-    use mithril_common::entities::Certificate;
+    use mithril_common::entities::{Certificate, CertificateSignature, SignedEntityType};
     use mithril_common::messages::{
         EpochSettingsMessage, MithrilStakeDistributionMessage, SignerMessagePart,
         SignerWithStakeMessagePart, TryFromMessageAdapter,
@@ -561,6 +576,14 @@ mod tests {
     ) -> (MithrilStakeDistributionMessage, Certificate) {
         let certificate_hash = "msd-certificate-hash".to_string();
         let mut certificate = fake_data::certificate(certificate_hash.clone());
+        certificate.epoch = epoch;
+        // A real stake-distribution certificate certifies `MithrilStakeDistribution(epoch)`; the
+        // follower binds the verified certificate to that signed entity type before trusting it.
+        if let CertificateSignature::MultiSignature(signed_entity_type, _) =
+            &mut certificate.signature
+        {
+            *signed_entity_type = SignedEntityType::MithrilStakeDistribution(epoch);
+        }
         certificate.protocol_message.set_message_part(
             ProtocolMessagePartKey::NextAggregateVerificationKey,
             fixture.compute_and_encode_concatenation_aggregate_verification_key(),
@@ -877,6 +900,100 @@ mod tests {
                     .times(1);
                 // Security: a certificate whose signed AVK does not match the recomputed one must
                 // NOT seed any stake.
+                stake_store.expect_save_stakes().never();
+
+                Arc::new(stake_store)
+            })
+            .build();
+
+        // The bootstrap failure is non-fatal: it is logged and the per-cycle registration still
+        // runs, so the follower falls back to next-epoch convergence instead of aborting.
+        signer_registration_follower
+            .synchronize_all_signers()
+            .await
+            .expect("synchronize_all_signers should not fail; the bootstrap failure is non-fatal");
+    }
+
+    #[tokio::test]
+    async fn synchronize_all_signers_is_non_fatal_when_bootstrap_certificate_is_for_another_epoch() {
+        let registration_epoch = Epoch(1);
+        let another_epoch = Epoch(7);
+        let fixture = MithrilFixtureBuilder::default()
+            .with_signers(5)
+            .disable_signers_certification()
+            .build();
+        let signers = fixture.signers();
+        let stake_distribution = fixture.stake_distribution();
+        let epoch_settings_message = FromEpochSettingsAdapter::try_adapt(EpochSettingsMessage {
+            epoch: registration_epoch,
+            current_signers: SignerMessagePart::from_signers(signers.clone()),
+            next_signers: SignerMessagePart::from_signers(signers),
+            ..EpochSettingsMessage::dummy()
+        })
+        .unwrap();
+        // The certificate verifies and its signed AVK matches the stake distribution's signers, but
+        // it certifies `MithrilStakeDistribution(another_epoch)` rather than the requested
+        // `signer_retrieval_epoch`. Without the epoch binding this would seed one epoch's signers
+        // under another epoch's key; the binding must reject it.
+        let (stake_distribution_message, certificate) =
+            signed_stake_distribution(another_epoch, &fixture);
+
+        let signer_registration_follower = MithrilSignerRegistrationFollowerBuilder::default()
+            .with_signer_recorder({
+                let mut signer_recorder = MockSignerRecorder::new();
+                signer_recorder
+                    .expect_record_signer_registration()
+                    .returning(|_| Ok(()))
+                    .times(5);
+
+                Arc::new(signer_recorder)
+            })
+            .with_signer_registration_verifier({
+                let mut signer_registration_verifier = MockSignerRegistrationVerifier::new();
+                signer_registration_verifier
+                    .expect_verify_synchronized()
+                    .returning(|signer, _| Ok(SignerWithStake::from_signer(signer.to_owned(), 123)))
+                    .times(5);
+
+                Arc::new(signer_registration_verifier)
+            })
+            .with_leader_aggregator_client({
+                let mut aggregator_client = MockLeaderAggregatorClient::new();
+                aggregator_client
+                    .expect_retrieve_epoch_settings()
+                    .returning(move || Ok(Some(epoch_settings_message.clone())))
+                    .times(1);
+                aggregator_client
+                    .expect_retrieve_mithril_stake_distribution()
+                    .returning(move |_epoch| Ok(Some(stake_distribution_message.clone())))
+                    .times(1);
+                Arc::new(aggregator_client)
+            })
+            .with_certificate_retriever({
+                let mut certificate_retriever = MockCertificateRetriever::new();
+                certificate_retriever
+                    .expect_get_certificate_details()
+                    .returning(move |_hash| Ok(certificate.clone()))
+                    .times(1);
+
+                Arc::new(certificate_retriever)
+            })
+            .with_certificate_verifier({
+                let mut certificate_verifier = MockCertificateVerifier::new();
+                certificate_verifier
+                    .expect_verify_certificate_chain()
+                    .returning(|_, _| Ok(()))
+                    .times(1);
+
+                Arc::new(certificate_verifier)
+            })
+            .with_stake_store({
+                let mut stake_store = MockStakeStore::new();
+                stake_store
+                    .expect_get_stakes()
+                    .returning(move |_epoch| Ok(Some(stake_distribution.clone())))
+                    .times(1);
+                // Security: a certificate that certifies a different epoch must NOT seed any stake.
                 stake_store.expect_save_stakes().never();
 
                 Arc::new(stake_store)
