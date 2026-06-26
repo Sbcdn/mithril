@@ -21,7 +21,7 @@ use warp::http::Method;
 use warp::http::StatusCode;
 use warp::{Filter, Rejection, Reply};
 
-use super::{middlewares, proof_routes};
+use super::{middlewares, proof_routes, tx_tree_routes};
 
 /// HTTP Server configuration
 pub struct RouterConfig {
@@ -132,6 +132,7 @@ pub fn routes(
                 .or(artifact_routes::cardano_transaction::routes(&state))
                 .or(artifact_routes::cardano_blocks_transactions::routes(&state))
                 .or(proof_routes::routes(&state))
+                .or(tx_tree_routes::routes(&state))
                 .or(signer_routes::routes(&state))
                 .or(signatures_routes::routes(&state))
                 .or(epoch_routes::routes(&state))

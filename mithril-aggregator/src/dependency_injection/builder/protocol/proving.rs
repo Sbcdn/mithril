@@ -6,8 +6,25 @@ use crate::dependency_injection::{DependenciesBuilder, Result};
 use crate::get_dependency;
 use crate::services::{
     LegacyMithrilProverService, LegacyProverService, MithrilProverService, ProverService,
+    TxTreeService,
 };
 impl DependenciesBuilder {
+    /// Build the transaction-tree service (canonical per-range tree inputs).
+    async fn build_tx_tree_service(&mut self) -> Result<Arc<TxTreeService>> {
+        let signed_entity_service = self.get_signed_entity_service().await?;
+        let chain_data_repository = self.get_chain_data_repository().await?;
+
+        Ok(Arc::new(TxTreeService::new(
+            signed_entity_service,
+            chain_data_repository,
+        )))
+    }
+
+    /// [TxTreeService] service
+    pub async fn get_tx_tree_service(&mut self) -> Result<Arc<TxTreeService>> {
+        get_dependency!(self.tx_tree_service)
+    }
+
     /// Build Prover service
     pub async fn build_prover_service(&mut self) -> Result<Arc<dyn ProverService>> {
         #[cfg(feature = "prover-accumulator")]

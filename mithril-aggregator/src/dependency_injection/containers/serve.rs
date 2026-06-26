@@ -24,7 +24,7 @@ use crate::{
     services::{
         CertificateChainSynchronizer, CertifierService, EpochService, LegacyProverService,
         MessageService, ProverService, SignedEntityService, SignerRecorder, SignerSynchronizer,
-        StakeDistributionService, UpkeepService,
+        StakeDistributionService, TxTreeService, UpkeepService,
     },
 };
 
@@ -85,6 +85,9 @@ pub struct ServeCommandDependenciesContainer {
 
     /// Signed Entity Service
     pub(crate) signed_entity_service: Arc<dyn SignedEntityService>,
+
+    /// Transaction-tree service (canonical per-range tree inputs)
+    pub(crate) tx_tree_service: Arc<TxTreeService>,
 
     /// Certifier Service
     pub certifier_service: Arc<dyn CertifierService>,

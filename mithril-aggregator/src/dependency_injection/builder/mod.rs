@@ -56,7 +56,7 @@ use crate::{
         AggregatorChainDataImporter, CertificateChainSynchronizer, CertifierService,
         LegacyProverService, MessageService, MithrilSignerRegistrationFollower, ProverService,
         SignedEntityService, SignerSynchronizer, Snapshotter, StakeDistributionService,
-        UpkeepService,
+        TxTreeService, UpkeepService,
     },
     tools::file_archiver::FileArchiver,
 };
@@ -251,6 +251,9 @@ pub struct DependenciesBuilder {
     /// Signed Entity Service
     pub signed_entity_service: Option<Arc<dyn SignedEntityService>>,
 
+    /// Transaction-tree service
+    pub tx_tree_service: Option<Arc<TxTreeService>>,
+
     /// Certifier service
     pub certifier_service: Option<Arc<dyn CertifierService>>,
 
@@ -346,6 +349,7 @@ impl DependenciesBuilder {
             signable_seed_builder: None,
             signable_builder_service: None,
             signed_entity_service: None,
+            tx_tree_service: None,
             certifier_service: None,
             epoch_service: None,
             mithril_network_configuration_provider: None,
@@ -404,6 +408,7 @@ impl DependenciesBuilder {
             signer_recorder: self.get_signer_store().await?,
             signable_builder_service: self.get_signable_builder_service().await?,
             signed_entity_service: self.get_signed_entity_service().await?,
+            tx_tree_service: self.get_tx_tree_service().await?,
             certifier_service: self.get_certifier_service().await?,
             epoch_service: self.get_epoch_service().await?,
             ticker_service: self.get_ticker_service().await?,

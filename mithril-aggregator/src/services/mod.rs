@@ -27,6 +27,7 @@ mod signed_entity;
 mod signer_registration;
 mod snapshotter;
 mod stake_distribution;
+mod tx_tree;
 mod upkeep;
 mod usage_reporter;
 
@@ -49,5 +50,6 @@ pub use signed_entity::*;
 pub use signer_registration::*;
 pub use snapshotter::*;
 pub use stake_distribution::*;
+pub use tx_tree::*;
 pub use upkeep::*;
 pub use usage_reporter::*;

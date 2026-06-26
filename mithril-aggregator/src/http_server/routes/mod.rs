@@ -11,6 +11,7 @@ mod signatures_routes;
 mod signer_routes;
 mod statistics_routes;
 mod status;
+mod tx_tree_routes;
 
 /// Shared maximum content length for payloads of 256kb
 const MAX_CONTENT_LENGTH: u64 = 1024 * 256;

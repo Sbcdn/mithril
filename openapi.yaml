@@ -660,6 +660,127 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /tx-tree/range:
+    get:
+      summary: (Unstable) Canonical contents of a transaction-tree block range
+      description: |
+        Returns the exact ordered leaves Mithril hashes for one block range, plus the
+        `block_range_root` (to_hex of the sub-tree root node), resolved against the certificate
+        certified at-or-below `up_to_block_number`. Tree-insertion order is preserved; no
+        client-side re-sorting is required. Below the first certified beacon returns 404.
+      parameters:
+        - name: start
+          in: query
+          description: Range start block number (a multiple of the block-range length, 15)
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: up_to_block_number
+          in: query
+          description: Resolve against the certificate certified at or below this block number
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: version
+          in: query
+          description: Transaction-tree protocol version
+          required: true
+          schema:
+            type: string
+            enum: [v1, v2]
+      responses:
+        "200":
+          description: Canonical block-range contents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  start:
+                    type: integer
+                    format: int64
+                  end:
+                    type: integer
+                    format: int64
+                  block_range_root:
+                    type: string
+                  ordered_txids:
+                    type: array
+                    items:
+                      type: string
+                  ordered_nodes:
+                    type: array
+                    items:
+                      type: object
+        "404":
+          description: No certificate certified at or below up_to_block_number, or range absent
+        default:
+          description: Transaction-tree range retrieval error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /tx-tree/frontier:
+    get:
+      summary: (Unstable) Enumerate the block ranges that bag to the certificate root at a tip
+      description: |
+        Returns a page of `(start, end, block_range_root)` entries (and the resolved certificate
+        hash + signed `cardano_transactions_merkle_root` X + beacon) whose ckb-MMR bagging equals X,
+        resolved against the certificate certified at-or-below `up_to_block_number`. Paginate with
+        `from_start`/`limit`; `next_start` is returned when more pages remain.
+      parameters:
+        - name: up_to_block_number
+          in: query
+          description: Resolve against the certificate certified at or below this block number
+          required: true
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: version
+          in: query
+          description: Transaction-tree protocol version
+          required: true
+          schema:
+            type: string
+            enum: [v1, v2]
+        - name: from_start
+          in: query
+          description: Return ranges whose start is greater than or equal to this value (pagination)
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: limit
+          in: query
+          description: Maximum number of ranges to return in this page
+          required: false
+          schema:
+            type: integer
+            format: int64
+            minimum: 1
+      responses:
+        "200":
+          description: A page of the frontier
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          description: No certificate certified at or below up_to_block_number
+        default:
+          description: Transaction-tree frontier retrieval error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /signers/registered/{epoch}:
     get:
       summary: Get registered signers for an epoch

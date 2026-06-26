@@ -14,6 +14,7 @@ use crate::http_server::routes::http_server_child_logger;
 use crate::http_server::routes::router::{RouterConfig, RouterState};
 use crate::services::{
     CertifierService, LegacyProverService, MessageService, ProverService, SignedEntityService,
+    TxTreeService,
 };
 use crate::{
     MetricsService, SignerRegisterer, SingleSignatureAuthenticator, VerificationKeyStorer,
@@ -108,6 +109,14 @@ pub fn with_signed_entity_service(
 ) -> impl Filter<Extract = (Arc<dyn SignedEntityService>,), Error = Infallible> + Clone + use<> {
     let signed_entity_service = router_state.dependencies.signed_entity_service.clone();
     warp::any().map(move || signed_entity_service.clone())
+}
+
+/// With transaction-tree service middleware
+pub fn with_tx_tree_service(
+    router_state: &RouterState,
+) -> impl Filter<Extract = (Arc<TxTreeService>,), Error = Infallible> + Clone + use<> {
+    let tx_tree_service = router_state.dependencies.tx_tree_service.clone();
+    warp::any().map(move || tx_tree_service.clone())
 }
 
 /// With verification key store
