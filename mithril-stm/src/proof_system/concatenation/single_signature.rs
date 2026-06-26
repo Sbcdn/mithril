@@ -22,7 +22,7 @@ pub struct SingleSignatureForConcatenation {
 
 impl SingleSignatureForConcatenation {
     /// Create and return a new instance of `SingleSignatureForConcatenation` for given `sigma` and
-    /// `indexes`. Exposed for custom serializer / deserializer consumers (e.g. risc0).
+    /// `indexes`. Exposed for custom serializer / deserializer consumers.
     pub fn new(sigma: BlsSignature, indexes: Vec<LotteryIndex>) -> Self {
         Self { sigma, indexes }
     }

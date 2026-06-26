@@ -21,7 +21,7 @@ pub struct AggregateVerificationKeyForConcatenation<D: MembershipDigest> {
 
 impl<D: MembershipDigest> AggregateVerificationKeyForConcatenation<D> {
     /// Construct from already-built components. Exposed for custom
-    /// serializer / deserializer consumers (e.g. risc0).
+    /// serializer / deserializer consumers.
     pub fn new(
         mt_commitment: MerkleTreeBatchCommitment<D::ConcatenationHash, MerkleTreeConcatenationLeaf>,
         total_stake: Stake,

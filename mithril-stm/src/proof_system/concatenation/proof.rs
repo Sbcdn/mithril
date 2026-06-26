@@ -39,7 +39,7 @@ pub struct ConcatenationProof<D: MembershipDigest> {
 
 impl<D: MembershipDigest> ConcatenationProof<D> {
     /// Construct a `ConcatenationProof` from already-aggregated components.
-    /// Exposed for custom serializer / deserializer consumers (e.g. risc0).
+    /// Exposed for custom serializer / deserializer consumers.
     pub fn new(
         signatures: Vec<SingleSignatureWithRegisteredParty>,
         batch_proof: MerkleBatchPath<D::ConcatenationHash>,

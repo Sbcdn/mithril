@@ -119,7 +119,7 @@ pub struct MerkleTreeBatchCommitment<D: Digest, L: MerkleTreeLeaf> {
 
 impl<D: Digest + FixedOutput, L: MerkleTreeLeaf> MerkleTreeBatchCommitment<D, L> {
     // Made public for AVK reconstruction from byte form in custom serializer
-    // consumers (e.g. risc0).
+    // consumers.
     pub fn new(root: Vec<u8>, nr_leaves: usize) -> Self {
         Self {
             root,

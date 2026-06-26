@@ -161,7 +161,7 @@ pub use protocol::{
 };
 pub use signature_scheme::BlsSignatureError;
 
-// Re-export Merkle types for custom serializer / deserializer consumers (e.g. risc0).
+// Re-export Merkle types for custom serializer / deserializer consumers.
 pub use membership_commitment::{
     MerkleBatchPath, MerkleTreeBatchCommitment, MerkleTreeConcatenationLeaf, MerkleTreeLeaf,
 };

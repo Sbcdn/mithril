@@ -31,7 +31,7 @@ pub struct SingleSignature {
 
 impl SingleSignature {
     /// Construct a `SingleSignature` from already-built components.
-    /// Exposed for custom serializer / deserializer consumers (e.g. risc0).
+    /// Exposed for custom serializer / deserializer consumers.
     pub fn new(
         concatenation_signature: SingleSignatureForConcatenation,
         signer_index: SignerIndex,
