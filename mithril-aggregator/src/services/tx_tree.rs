@@ -142,7 +142,11 @@ pub struct TxTreeFrontierMessage {
     pub next_start: Option<u64>,
 }
 
-/// Default maximum number of ranges returned by one frontier page.
+/// Default and hard-maximum number of ranges returned by one frontier page.
+///
+/// The caller-supplied limit is clamped to this bound so a single request cannot materialize the
+/// whole frontier (hundreds of thousands of ranges on mainnet) into one response; larger result
+/// sets must be paginated via `from_start`.
 const FRONTIER_DEFAULT_LIMIT: usize = 5_000;
 
 /// Service exposing the canonical per-range transaction-tree inputs.
@@ -314,7 +318,7 @@ impl TxTreeService {
         let Some(anchor) = self.resolve_anchor(up_to, version).await? else {
             return Ok(None);
         };
-        let limit = limit.unwrap_or(FRONTIER_DEFAULT_LIMIT).max(1);
+        let limit = limit.unwrap_or(FRONTIER_DEFAULT_LIMIT).clamp(1, FRONTIER_DEFAULT_LIMIT);
         let from_start = from_start.unwrap_or(BlockNumber(0));
 
         // Stored (sealed) block-range roots up to the certificate's beacon, ordered by start.
