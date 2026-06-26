@@ -262,6 +262,46 @@ impl TxTreeService {
         }))
     }
 
+    /// Compute the `to_hex` sub-tree root over the leaves of `[start, end)` for `version`.
+    /// `None` if the range holds no leaves.
+    async fn computed_root(
+        &self,
+        start: BlockNumber,
+        end: BlockNumber,
+        version: TxTreeVersion,
+    ) -> StdResult<Option<String>> {
+        let root = match version {
+            TxTreeVersion::V1 => {
+                let transactions = self
+                    .chain_data_repository
+                    .get_transactions_in_range(start..end)
+                    .await?;
+                if transactions.is_empty() {
+                    return Ok(None);
+                }
+                MKTree::<MKTreeStoreInMemory>::new(&transactions)
+                    .and_then(|tree| tree.compute_root())
+                    .with_context(|| format!("Failed to compute v1 block range root at {start}"))?
+                    .to_hex()
+            }
+            TxTreeVersion::V2 => {
+                let nodes = self
+                    .chain_data_repository
+                    .get_blocks_and_transactions_in_range(start..end)
+                    .await?;
+                if nodes.is_empty() {
+                    return Ok(None);
+                }
+                MKTree::<MKTreeStoreInMemory>::new_from_iter(nodes)
+                    .and_then(|tree| tree.compute_root())
+                    .with_context(|| format!("Failed to compute v2 block range root at {start}"))?
+                    .to_hex()
+            }
+        };
+
+        Ok(Some(root))
+    }
+
     /// Return one page of the ranges (and their stored roots) that bag to `X` at `up_to`, plus the
     /// resolved certificate + `X`. `None` if no certificate is certified at-or-below `up_to`.
     pub async fn frontier(
@@ -292,15 +332,42 @@ impl TxTreeService {
         };
 
         let mut ranges: Vec<TxTreeRangeRootMessage> = roots_iterator
-            .filter(|(range, _)| range.start >= from_start)
             .map(|(range, root)| TxTreeRangeRootMessage {
                 start: *range.start,
                 end: *range.end,
                 block_range_root: root.to_hex(),
             })
             .collect();
-        ranges.sort_by_key(|r| r.start);
 
+        // The certificate's tree includes a partial trailing range whenever the beacon does not fall
+        // on a block-range boundary. Replicate `compute_merkle_map_from_block_range_roots` so the
+        // returned ranges bag to X (a sealed range already covering the beacon needs no partial).
+        let latest_block_range = BlockRange::from_block_number(anchor.beacon);
+        let beacon = *anchor.beacon;
+        let beacon_in_last_range = ranges
+            .iter()
+            .map(|r| (r.start, r.end))
+            .max()
+            .map(|(start, end)| start <= beacon && beacon < end)
+            .unwrap_or(false);
+        if !latest_block_range.is_fully_covered_at(anchor.beacon) && !beacon_in_last_range {
+            let partial_end =
+                (latest_block_range.start + BlockRange::LENGTH).min(anchor.beacon + 1);
+            if let Some(root) = self
+                .computed_root(latest_block_range.start, partial_end, version)
+                .await?
+            {
+                ranges.push(TxTreeRangeRootMessage {
+                    start: *latest_block_range.start,
+                    end: *(latest_block_range.start + BlockRange::LENGTH),
+                    block_range_root: root,
+                });
+            }
+        }
+
+        // Pagination (the partial range, if present, has the highest start and sorts last).
+        ranges.sort_by_key(|r| r.start);
+        ranges.retain(|r| r.start >= *from_start);
         let next_start = if ranges.len() > limit {
             let next = ranges[limit].start;
             ranges.truncate(limit);
