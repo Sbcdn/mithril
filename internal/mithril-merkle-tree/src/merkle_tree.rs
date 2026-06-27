@@ -449,8 +449,27 @@ impl<S: MKTreeStorer> MKTree<S> {
     /// persistent store reloaded on startup) at `mmr_size`. Use `0` for an empty store and then
     /// [`append`][Self::append]. Combined with [`generate_proof_at_size`][Self::generate_proof_at_size],
     /// this lets a single append-only tree serve proofs against any of its past sizes.
+    ///
+    /// # Leaf-index caveat
+    ///
+    /// A mounted tree carries the node store but **not** the leaf-position index that
+    /// [`new_from_iter`][Self::new_from_iter] builds, so operations that read that index see only
+    /// the leaves subsequently [`append`][Self::append]ed, not the mounted ones:
+    /// [`leaves`][Self::leaves], [`total_leaves`][Self::total_leaves], [`contains`][Self::contains],
+    /// and — because it rebuilds from `leaves()` — `clone()`. Use a mounted tree only for
+    /// size-anchored root/proof generation ([`compute_root_at_size`][Self::compute_root_at_size],
+    /// [`generate_proof_at_size`][Self::generate_proof_at_size]) and [`append`][Self::append]; do
+    /// not clone it or rely on its leaf accessors.
     pub fn from_storer_at_size(storer: S, mmr_size: u64) -> StdResult<Self> {
         let inner_tree = MMR::<_, _, _>::new(mmr_size, MKTreeStore::<S>::build_from(storer));
+        // Fail fast if the storer is inconsistent with `mmr_size`: a non-empty tree must be able to
+        // bag its peaks, so a missing or mismatched node surfaces here instead of silently
+        // producing wrong roots and proofs later.
+        if mmr_size > 0 {
+            inner_tree.get_root().with_context(|| {
+                format!("Storer is not consistent with the requested MMR size {mmr_size}")
+            })?;
+        }
 
         Ok(Self { inner_tree })
     }
@@ -526,6 +545,11 @@ impl<S: MKTreeStorer> MKTree<S> {
 
 impl<S: MKTreeStorer> Clone for MKTree<S> {
     fn clone(&self) -> Self {
+        // Rebuilds an independent tree from the leaf-position index. A tree mounted via
+        // `from_storer_at_size` does not populate that index, so it clones to an empty tree — see
+        // the leaf-index caveat there; such trees must not be cloned. (A store-level clone is not
+        // an option: an in-memory storer shares its state behind an `Arc`, so it would not be
+        // independent.)
         // Cloning should never fail so unwrap is safe
         Self::new(&self.leaves()).unwrap()
     }
@@ -600,6 +624,18 @@ mod tests {
             expected.compute_root().unwrap(),
             tree.compute_root().unwrap()
         );
+    }
+
+    #[test]
+    fn from_storer_at_size_rejects_a_storer_inconsistent_with_the_size() {
+        // An empty store cannot back a tree of size 3: the mount must fail fast rather than yield a
+        // tree that would silently produce wrong roots and proofs.
+        let result = MKTree::<MKTreeStoreInMemory>::from_storer_at_size(
+            MKTreeStoreInMemory::build().unwrap(),
+            3,
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]
