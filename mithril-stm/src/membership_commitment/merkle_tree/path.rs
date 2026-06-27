@@ -90,7 +90,11 @@ pub struct MerkleBatchPath<D: Digest + FixedOutput> {
 }
 
 impl<D: Digest + FixedOutput> MerkleBatchPath<D> {
-    pub(crate) fn new(values: Vec<Vec<u8>>, indices: Vec<usize>) -> MerkleBatchPath<D> {
+    /// Construct a `MerkleBatchPath` from already-built components. Exposed (together with
+    /// [`values`][Self::values] and [`indices`][Self::indices]) so custom serializer / deserializer
+    /// consumers can round-trip the raw component layout. The path is re-validated when it is used
+    /// for membership verification, so an inconsistent path simply fails to verify.
+    pub fn new(values: Vec<Vec<u8>>, indices: Vec<usize>) -> MerkleBatchPath<D> {
         Self {
             values,
             indices,
