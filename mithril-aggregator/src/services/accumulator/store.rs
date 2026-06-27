@@ -1,8 +1,12 @@
 //! A `redb`-backed, append-only node store for the MMR accumulator prover.
 //!
-//! It persists the Merkle Mountain Range nodes (`position -> node bytes`) of the
-//! block-range-roots accumulator so the tree survives restarts and is paged off-RAM by the
-//! operating system. Only the node store is required: the accumulator generates proofs with
+//! It holds the Merkle Mountain Range nodes (`position -> node bytes`) of the block-range-roots
+//! accumulator on disk, so the tree's working set is paged off-RAM by the operating system instead
+//! of staying resident. The accumulator rebuilds the store from the sealed block-range-roots on
+//! each restart — it is an off-RAM working cache, not a source of truth reused across restarts — so
+//! appends use [`Durability::Eventual`] to avoid an fsync per leaf, and obsolete nodes left behind
+//! by a shrunk chain are inert (reads are bounded by the current MMR size). Only the node store is
+//! required: the accumulator generates proofs with
 //! [`MKTree::generate_proof_at_size`][mithril_common::crypto_helper::MKTree::generate_proof_at_size]
 //! using explicit leaf positions, so the value -> position leaf index of
 //! [`MKTreeLeafIndexer`] is intentionally **not** maintained (its methods are inert).
@@ -10,7 +14,7 @@
 use std::{path::Path, sync::Arc};
 
 use anyhow::Context;
-use redb::{Database, TableDefinition};
+use redb::{Database, Durability, TableDefinition};
 
 use mithril_common::{
     StdResult,
@@ -75,7 +79,12 @@ impl MKTreeStorer for MKTreeStoreRedb {
     }
 
     fn append(&self, pos: u64, elems: Vec<Arc<MKTreeNode>>) -> StdResult<()> {
-        let transaction = self.database.begin_write()?;
+        let mut transaction = self.database.begin_write()?;
+        // The accumulator rebuilds this store from the sealed block-range-roots on every restart,
+        // so per-commit durability is unnecessary. `Eventual` lets each append return without
+        // waiting for an fsync (redb batches the flush and still frees pages), which avoids one
+        // fsync per leaf when backfilling hundreds of thousands of ranges.
+        transaction.set_durability(Durability::Eventual);
         {
             let mut table = transaction.open_table(NODES_TABLE)?;
             for (i, elem) in elems.into_iter().enumerate() {

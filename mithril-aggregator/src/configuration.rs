@@ -239,9 +239,10 @@ pub trait ConfigurationSource {
         panic!("allow_unparsable_block is not implemented.");
     }
 
-    /// Whether to back the transaction-proof accumulator with the restart-persistent, off-RAM
-    /// redb store instead of keeping it in memory (requires the `prover-accumulator` build
-    /// feature). The accumulator itself is always used; this only selects its storage backend.
+    /// Whether to back the transaction-proof accumulator with the off-RAM redb store (rebuilt from
+    /// the sealed block-range-roots on each restart) instead of keeping it in memory (requires the
+    /// `prover-accumulator` build feature). The accumulator itself is always used; this only
+    /// selects its storage backend.
     fn cardano_transactions_prover_use_accumulator(&self) -> bool {
         panic!("cardano_transactions_prover_use_accumulator is not implemented.");
     }
@@ -628,9 +629,10 @@ pub struct ServeCommandConfiguration {
     /// Will be ignored on (pre)production networks.
     pub allow_unparsable_block: bool,
 
-    /// Whether to back the transaction-proof accumulator with the restart-persistent, off-RAM
-    /// redb store instead of keeping it in memory (requires the `prover-accumulator` build
-    /// feature). The accumulator itself is always used; this only selects its storage backend.
+    /// Whether to back the transaction-proof accumulator with the off-RAM redb store (rebuilt from
+    /// the sealed block-range-roots on each restart) instead of keeping it in memory (requires the
+    /// `prover-accumulator` build feature). The accumulator itself is always used; this only
+    /// selects its storage backend.
     pub cardano_transactions_prover_use_accumulator: bool,
 
     /// Cardano blocks and transactions prover cache pool size

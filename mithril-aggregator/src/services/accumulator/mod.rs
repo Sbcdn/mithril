@@ -5,8 +5,8 @@
 //! Proofs and roots are byte-identical to the rebuild path; only the service layer differs.
 //!
 //! The accumulator runs over any [`MKTreeStorer`]; the default build uses an in-memory store. The
-//! optional `prover-accumulator` feature adds a redb-backed store ([`MKTreeStoreRedb`]) for
-//! off-RAM, restart-persistent proof serving.
+//! optional `prover-accumulator` feature adds a redb-backed store ([`MKTreeStoreRedb`]) for off-RAM
+//! proof serving (it is rebuilt from the sealed block-range-roots on each restart).
 
 mod blocks_prover;
 mod overlay;

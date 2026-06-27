@@ -35,8 +35,8 @@ impl DependenciesBuilder {
     /// which serves an inclusion proof against any historical certified tip from a single tree
     /// (the master root at a past size is reproduced from the immutable MMR nodes). The default
     /// build keeps the accumulator in memory; enabling the `prover-accumulator` feature together
-    /// with `cardano_transactions_prover_use_accumulator` backs it with a restart-persistent,
-    /// off-RAM redb store instead.
+    /// with `cardano_transactions_prover_use_accumulator` backs it with an off-RAM redb store
+    /// instead (rebuilt from the sealed block-range-roots on each restart).
     pub async fn build_prover_service(&mut self) -> Result<Arc<dyn ProverService>> {
         #[cfg(feature = "prover-accumulator")]
         if self.configuration.cardano_transactions_prover_use_accumulator() {
