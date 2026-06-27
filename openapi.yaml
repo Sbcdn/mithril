@@ -699,23 +699,69 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - start
+                  - end
+                  - block_range_root
                 properties:
                   start:
+                    description: Range start block number (a multiple of the block-range length)
                     type: integer
                     format: int64
                   end:
+                    description: Range end block number (start + block-range length)
                     type: integer
                     format: int64
                   block_range_root:
+                    description: to_hex of the sub-tree Merkle root node, exactly as Mithril stores it
                     type: string
                   ordered_txids:
+                    description: "v1 only: transaction hashes in tree-insertion order"
                     type: array
                     items:
                       type: string
                   ordered_nodes:
+                    description: "v2 only: interleaved Block and Tx nodes in tree-insertion order"
                     type: array
                     items:
-                      type: object
+                      oneOf:
+                        - description: A block node
+                          type: object
+                          required: [type, block_hash, block_number, slot_number]
+                          properties:
+                            type:
+                              type: string
+                              enum: [Block]
+                            block_hash:
+                              type: string
+                            block_number:
+                              type: integer
+                              format: int64
+                            slot_number:
+                              type: integer
+                              format: int64
+                        - description: A transaction node
+                          type: object
+                          required:
+                            - type
+                            - transaction_hash
+                            - block_hash
+                            - block_number
+                            - slot_number
+                          properties:
+                            type:
+                              type: string
+                              enum: [Tx]
+                            transaction_hash:
+                              type: string
+                            block_hash:
+                              type: string
+                            block_number:
+                              type: integer
+                              format: int64
+                            slot_number:
+                              type: integer
+                              format: int64
         "404":
           description: No certificate certified at or below up_to_block_number, or range absent
         default:
@@ -759,12 +805,13 @@ paths:
             minimum: 0
         - name: limit
           in: query
-          description: Maximum number of ranges to return in this page
+          description: Maximum number of ranges to return in this page (clamped to 5000)
           required: false
           schema:
             type: integer
             format: int64
             minimum: 1
+            maximum: 5000
       responses:
         "200":
           description: A page of the frontier
@@ -772,6 +819,49 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - certificate_hash
+                  - cardano_transactions_merkle_root
+                  - beacon
+                  - block_range_length
+                  - ranges
+                properties:
+                  certificate_hash:
+                    description: Hash of the certificate certified at-or-below up_to_block_number
+                    type: string
+                  cardano_transactions_merkle_root:
+                    description: The CardanoTransactionsMerkleRoot (X) that certificate signs
+                    type: string
+                  beacon:
+                    description: The certificate's beacon block number (the effective tip the ranges bag to)
+                    type: integer
+                    format: int64
+                  block_range_length:
+                    description: Block-range length (15)
+                    type: integer
+                    format: int64
+                  ranges:
+                    description: A page of (start, end, block_range_root) entries ordered by start
+                    type: array
+                    items:
+                      type: object
+                      required:
+                        - start
+                        - end
+                        - block_range_root
+                      properties:
+                        start:
+                          type: integer
+                          format: int64
+                        end:
+                          type: integer
+                          format: int64
+                        block_range_root:
+                          type: string
+                  next_start:
+                    description: start to pass back to fetch the next page; absent on the last page
+                    type: integer
+                    format: int64
         "404":
           description: No certificate certified at or below up_to_block_number
         default:
